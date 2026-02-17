@@ -14,6 +14,7 @@
 import os
 import pandas as pd
 import matplotlib.pyplot as plt
+import seaborn as sns
 import datetime
 import statsmodels.api as sm
 import statsmodels.formula.api as smf
@@ -21,6 +22,7 @@ import statsmodels.formula.api as smf
 
 FILEPATH = "./daily_activity.csv"
 PLOTPATH = "plots"
+os.makedirs(PLOTPATH, exist_ok=True)
 SHOWPLOTS = False
 
 def showCaloriesPerDay(df, userId, timeRange=(None, None)):
@@ -93,8 +95,7 @@ def indivdual_steps_vs_calories(df, id):
     user_data = df[df['Id'] == id]
     linear_model = relationshipCaloriesSteps(df)
 
-    # Always draw on a fresh figure so previous pandas plots don't leak into this one.
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, ax = plt.subplots(figsize=(10, 5))
     ax.scatter(user_data['TotalSteps'], user_data['Calories'], alpha=0.7, label='Observed')
 
     user_data_sorted = user_data.sort_values('TotalSteps')
@@ -132,7 +133,14 @@ def main():
     indivdual_steps_vs_calories(df, 1503960366)
 
     # Additional data exploration
-
+    ## Correlation matrix between the variables
+    variables = df.drop(['Id', 'ActivityDate', 'Weekday'], axis = 1)
+    correlations = variables.corr()
+    plt.figure(figsize=(15, 10))
+    sns.heatmap(correlations, annot=True, cmap='coolwarm')
+    plt.title('Correlations between the variables')
+    plt.tight_layout()
+    plt.savefig(os.path.join(PLOTPATH, f"correlation_matrix.png"))
 
 if __name__ == "__main__":
     main()
