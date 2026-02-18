@@ -1,5 +1,8 @@
 import pandas as pd
+import sqlite3 as sq
+from sklearn.linear_model import LinearRegression
 
+#Classification
 
 def classify_ids(df):
     df_id_class = pd.DataFrame(columns=['Id', 'Class'])
@@ -27,4 +30,30 @@ id_counts = df.groupby('Id').size().reset_index(name='Count')
 
 classified_df = classify_ids(id_counts)
 
-print(df)
+
+#Database analysis
+
+conn = sq.connect("fitbit_database.db")
+cursor = conn.cursor()
+
+df_sleep = pd.read_sql_query("""
+    SELECT CAST(Id as INTEGER) as Id, date, logId, COUNT(*) as sleep_duration_minutes
+    FROM minute_sleep
+    GROUP BY Id, logId
+""", conn)
+
+df_active = pd.read_sql_query("""
+    SELECT CAST(Id as INTEGER) as Id, ActivityDate as date, 
+    VeryActiveMinutes + FairlyActiveMinutes + LightlyActiveMinutes as total_active_minutes
+    FROM daily_activity
+""", conn)
+
+df_sleep['date'] = pd.to_datetime(df_sleep['date']).dt.date
+df_active['date'] = pd.to_datetime(df_active['date']).dt.date
+
+
+df_merged = pd.merge(df_sleep, df_active, on=['Id', 'date'], how='inner')
+
+print(df_merged)
+
+    
