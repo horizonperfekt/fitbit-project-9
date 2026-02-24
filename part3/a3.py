@@ -57,8 +57,8 @@ df_merged = pd.merge(df_sleep, df_active, on=['Id', 'date'], how='inner')
 
 print(f"Data inspection: \n {df_merged.head(10)}")
 
-X = df_merged[['total_active_minutes']].values   # predictor (2D for sklearn)
-y = df_merged['sleep_duration_minutes'].values   # response
+X = df_merged[['total_active_minutes']].values
+y = df_merged['sleep_duration_minutes'].values
 
 model = LinearRegression()
 model.fit(X, y)
