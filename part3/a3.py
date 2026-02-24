@@ -1,6 +1,7 @@
 import pandas as pd
 import sqlite3 as sq
 from sklearn.linear_model import LinearRegression
+import matplotlib.pyplot as plt
 
 #Classification
 
@@ -54,6 +55,40 @@ df_active['date'] = pd.to_datetime(df_active['date']).dt.date
 
 df_merged = pd.merge(df_sleep, df_active, on=['Id', 'date'], how='inner')
 
-print(df_merged)
+print(f"Data inspection: \n {df_merged.head(10)}")
 
-    
+X = df_merged[['total_active_minutes']].values   # predictor (2D for sklearn)
+y = df_merged['sleep_duration_minutes'].values   # response
+
+model = LinearRegression()
+model.fit(X, y)
+
+# Results
+print("Linear regression: Sleep duration vs Active minutes ===")
+print(f"Slope (coefficient): {model.coef_[0]:.4f}")
+print(f"Intercept: {model.intercept_:.2f} minutes")
+print(f"R²: {model.score(X, y):.4f}")
+
+plt.figure(figsize=(8,5))
+plt.scatter(X, y, alpha=0.5, label='Data points')
+plt.plot(X, model.predict(X), color='red', linewidth=2, label='Regression line')
+plt.xlabel('Total Active minutes (very + fairly + light)')
+plt.ylabel('Sleep duration (minutes)')
+plt.title('Sleep vs. Active minutes (all users)')
+plt.legend()
+plt.grid(True, linestyle='--', alpha=0.6)
+plt.tight_layout()
+plt.show()
+
+print("Per-individual Regressions")
+for user_id in df_merged['Id'].unique():
+    user_data = df_merged[df_merged['Id'] == user_id]
+    # Need at least 2 points to fit a line
+    if len(user_data) > 1:
+        X_u = user_data[['total_active_minutes']].values
+        y_u = user_data['sleep_duration_minutes'].values
+        model_u = LinearRegression()
+        model_u.fit(X_u, y_u)
+        print(f"User {user_id}: slope = {model_u.coef_[0]:.4f}, R² = {model_u.score(X_u, y_u):.4f} (n={len(user_data)})")
+    else:
+        print(f"User {user_id}: insufficient data (only {len(user_data)} day)")
