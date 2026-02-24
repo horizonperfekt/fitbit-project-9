@@ -161,7 +161,7 @@ def plot_block_averages(conn):
     return fig
 
 
-# Task 5: Heart rate and exercise intensity visualization
+#task 5
 
 def plot_individual(conn, individual_id):
     df_hr = pd.read_sql_query(
@@ -193,3 +193,11 @@ def plot_individual(conn, individual_id):
 
     plt.tight_layout()
     return fig
+
+fig4 = plot_block_averages(conn)
+# fig4.savefig('part3/plots/block_averages.png')
+plt.show()
+
+fig5 = plot_individual(conn, 4020332650)
+# fig5.savefig('part3/plots/individual.png')
+plt.show()
