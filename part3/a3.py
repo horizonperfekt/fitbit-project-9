@@ -1,10 +1,12 @@
+import os
 import pandas as pd
 import sqlite3 as sq
 import matplotlib.pyplot as plt
 from sklearn.linear_model import LinearRegression
-import matplotlib.pyplot as plt
 
-#Classification
+DATA_DIR = os.path.join(os.path.dirname(__file__), "..")
+
+# Task 1: Classification
 
 def classify_ids(df):
     df_id_class = pd.DataFrame(columns=['Id', 'Class'])
@@ -25,75 +27,77 @@ def classify_ids(df):
     return df_id_class
 
 
+def task1():
+    df = pd.read_csv(os.path.join(DATA_DIR, "daily_activity.csv"))
+    id_counts = df.groupby('Id').size().reset_index(name='Count')
+    classified_df = classify_ids(id_counts)
+    print(classified_df)
 
-df = pd.read_csv("daily_activity.csv")
 
-id_counts = df.groupby('Id').size().reset_index(name='Count')
+# Task 2: Database analysis
 
-classified_df = classify_ids(id_counts)
+def task2(conn):
+    df_sleep = pd.read_sql_query("""
+        SELECT CAST(Id as INTEGER) as Id, date, logId, COUNT(*) as sleep_duration_minutes
+        FROM minute_sleep
+        GROUP BY Id, logId
+    """, conn)
+
+    df_active = pd.read_sql_query("""
+        SELECT CAST(Id as INTEGER) as Id, ActivityDate as date,
+        VeryActiveMinutes + FairlyActiveMinutes + LightlyActiveMinutes as total_active_minutes
+        FROM daily_activity
+    """, conn)
+
+    df_sleep['date'] = pd.to_datetime(df_sleep['date']).dt.date
+    df_active['date'] = pd.to_datetime(df_active['date']).dt.date
+
+    df_merged = pd.merge(df_sleep, df_active, on=['Id', 'date'], how='inner')
+    print(f"Data inspection: \n {df_merged.head(10)}")
+
+    return df_merged
 
 
-#Database analysis
+# Task 3: Linear regression
 
-conn = sq.connect("fitbit_database.db")
-cursor = conn.cursor()
+def task3(df_merged):
+    X = df_merged[['total_active_minutes']].values
+    y = df_merged['sleep_duration_minutes'].values
 
-df_sleep = pd.read_sql_query("""
-    SELECT CAST(Id as INTEGER) as Id, date, logId, COUNT(*) as sleep_duration_minutes
-    FROM minute_sleep
-    GROUP BY Id, logId
-""", conn)
+    model = LinearRegression()
+    model.fit(X, y)
 
-df_active = pd.read_sql_query("""
-    SELECT CAST(Id as INTEGER) as Id, ActivityDate as date, 
-    VeryActiveMinutes + FairlyActiveMinutes + LightlyActiveMinutes as total_active_minutes
-    FROM daily_activity
-""", conn)
+    print("Linear regression: Sleep duration vs Active minutes ===")
+    print(f"Slope (coefficient): {model.coef_[0]:.4f}")
+    print(f"Intercept: {model.intercept_:.2f} minutes")
+    print(f"R²: {model.score(X, y):.4f}")
 
-df_sleep['date'] = pd.to_datetime(df_sleep['date']).dt.date
-df_active['date'] = pd.to_datetime(df_active['date']).dt.date
+    plt.figure(figsize=(8, 5))
+    plt.scatter(X, y, alpha=0.5, label='Data points')
+    plt.plot(X, model.predict(X), color='red', linewidth=2, label='Regression line')
+    plt.xlabel('Total Active minutes (very + fairly + light)')
+    plt.ylabel('Sleep duration (minutes)')
+    plt.title('Sleep vs. Active minutes (all users)')
+    plt.legend()
+    plt.grid(True, linestyle='--', alpha=0.6)
+    plt.tight_layout()
+    plt.show()
 
-df_merged = pd.merge(df_sleep, df_active, on=['Id', 'date'], how='inner')
+    print("Per-individual Regressions")
+    for user_id in df_merged['Id'].unique():
+        user_data = df_merged[df_merged['Id'] == user_id]
+        if len(user_data) > 1:
+            X_u = user_data[['total_active_minutes']].values
+            y_u = user_data['sleep_duration_minutes'].values
+            model_u = LinearRegression()
+            model_u.fit(X_u, y_u)
+            print(f"User {user_id}: slope = {model_u.coef_[0]:.4f}, R² = {model_u.score(X_u, y_u):.4f} (n={len(user_data)})")
+        else:
+            print(f"User {user_id}: insufficient data (only {len(user_data)} day)")
 
-print(f"Data inspection: \n {df_merged.head(10)}")
 
-X = df_merged[['total_active_minutes']].values
-y = df_merged['sleep_duration_minutes'].values
+# Task 4: 4-hour block averages
 
-model = LinearRegression()
-model.fit(X, y)
-
-# Results
-print("Linear regression: Sleep duration vs Active minutes ===")
-print(f"Slope (coefficient): {model.coef_[0]:.4f}")
-print(f"Intercept: {model.intercept_:.2f} minutes")
-print(f"R²: {model.score(X, y):.4f}")
-
-plt.figure(figsize=(8,5))
-plt.scatter(X, y, alpha=0.5, label='Data points')
-plt.plot(X, model.predict(X), color='red', linewidth=2, label='Regression line')
-plt.xlabel('Total Active minutes (very + fairly + light)')
-plt.ylabel('Sleep duration (minutes)')
-plt.title('Sleep vs. Active minutes (all users)')
-plt.legend()
-plt.grid(True, linestyle='--', alpha=0.6)
-plt.tight_layout()
-plt.show()
-
-print("Per-individual Regressions")
-for user_id in df_merged['Id'].unique():
-    user_data = df_merged[df_merged['Id'] == user_id]
-    # Need at least 2 points to fit a line
-    if len(user_data) > 1:
-        X_u = user_data[['total_active_minutes']].values
-        y_u = user_data['sleep_duration_minutes'].values
-        model_u = LinearRegression()
-        model_u.fit(X_u, y_u)
-        print(f"User {user_id}: slope = {model_u.coef_[0]:.4f}, R² = {model_u.score(X_u, y_u):.4f} (n={len(user_data)})")
-    else:
-        print(f"User {user_id}: insufficient data (only {len(user_data)} day)")
-
-#task 4
 BLOCKS = ['0-4', '4-8', '8-12', '12-16', '16-20', '20-24']
 
 def assign_block(hour):
@@ -110,8 +114,8 @@ def assign_block(hour):
     else:
         return '20-24'
 
+
 def compute_block_averages(conn):
-    #steps
     df_steps = pd.read_sql_query("SELECT Id, ActivityHour, StepTotal FROM hourly_steps", conn)
     df_steps['ActivityHour'] = pd.to_datetime(df_steps['ActivityHour'])
     df_steps['block'] = df_steps['ActivityHour'].dt.hour.apply(assign_block)
@@ -119,7 +123,6 @@ def compute_block_averages(conn):
     steps_per_block = df_steps.groupby(['Id', 'date', 'block'])['StepTotal'].sum().reset_index()
     avg_steps = steps_per_block.groupby('block')['StepTotal'].mean().reindex(BLOCKS)
 
-    #calories
     df_cals = pd.read_sql_query("SELECT Id, ActivityHour, Calories FROM hourly_calories", conn)
     df_cals['ActivityHour'] = pd.to_datetime(df_cals['ActivityHour'])
     df_cals['block'] = df_cals['ActivityHour'].dt.hour.apply(assign_block)
@@ -127,7 +130,6 @@ def compute_block_averages(conn):
     cals_per_block = df_cals.groupby(['Id', 'date', 'block'])['Calories'].sum().reset_index()
     avg_cals = cals_per_block.groupby('block')['Calories'].mean().reindex(BLOCKS)
 
-    #sleep
     df_min_sleep = pd.read_sql_query("SELECT Id, date, logId FROM minute_sleep", conn)
     df_min_sleep['datetime'] = pd.to_datetime(df_min_sleep['date'])
     df_min_sleep['block'] = df_min_sleep['datetime'].dt.hour.apply(assign_block)
@@ -161,7 +163,12 @@ def plot_block_averages(conn):
     return fig
 
 
-#task 5
+def task4(conn):
+    fig = plot_block_averages(conn)
+    plt.show()
+
+
+# Task 5: Heart rate and exercise intensity
 
 def plot_individual(conn, individual_id):
     df_hr = pd.read_sql_query(
@@ -194,10 +201,25 @@ def plot_individual(conn, individual_id):
     plt.tight_layout()
     return fig
 
-fig4 = plot_block_averages(conn)
-# fig4.savefig('part3/plots/block_averages.png')
-plt.show()
 
-fig5 = plot_individual(conn, 4020332650)
-# fig5.savefig('part3/plots/individual.png')
-plt.show()
+def task5(conn):
+    fig = plot_individual(conn, 4020332650)
+    plt.show()
+
+
+# Main
+
+def main():
+    conn = sq.connect(os.path.join(DATA_DIR, "fitbit_database.db"))
+
+    task1()
+    df_merged = task2(conn)
+    task3(df_merged)
+    task4(conn)
+    task5(conn)
+
+    conn.close()
+
+
+if __name__ == "__main__":
+    main()
