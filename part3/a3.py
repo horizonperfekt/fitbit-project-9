@@ -3,8 +3,10 @@ import pandas as pd
 import sqlite3 as sq
 import matplotlib.pyplot as plt
 from sklearn.linear_model import LinearRegression
+import numpy as np
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..")
+WEATHER_DATA_PATH = os.path.join(DATA_DIR, "part3", "chicago 2016-03-12 to 2016-04-09.csv")
 
 # Task 1: Classification
 
@@ -56,7 +58,6 @@ def task2(conn):
     print(f"Data inspection: \n {df_merged.head(10)}")
 
     return df_merged
-
 
 # Task 3: Linear regression
 
@@ -201,10 +202,91 @@ def plot_individual(conn, individual_id):
     plt.tight_layout()
     return fig
 
-
 def task5(conn):
     fig = plot_individual(conn, 4020332650)
     plt.show()
+
+
+# Task 6: Correlation weather factors and activity levels
+
+def plot_weather_activity_correlation(conn):
+    weather_df = pd.read_csv(WEATHER_DATA_PATH)
+    
+    weather_df['datetime'] = pd.to_datetime(weather_df['datetime'])
+    weather_df['date'] = weather_df['datetime'].dt.date
+
+    weather_cols = ['temp', 'feelslike', 'humidity', 'precip', 'windspeed', 'cloudcover', 'visibility', 'uvindex']
+    weather_agg = weather_df.groupby('date')[weather_cols].mean().reset_index()
+
+    activity_cols = ['TotalSteps', 'TotalDistance', 'Calories', 'VeryActiveMinutes', 'FairlyActiveMinutes', 'LightlyActiveMinutes', 'SedentaryMinutes']
+    query = f"""
+        SELECT ActivityDate, {', '.join(activity_cols)}
+        FROM daily_activity
+    """
+    activity_df = pd.read_sql_query(query, conn)
+    activity_df['date'] = pd.to_datetime(activity_df['ActivityDate']).dt.date
+    activity_agg = activity_df.groupby('date')[activity_cols].mean().reset_index()
+
+    merged_df = pd.merge(activity_agg, weather_agg, on='date', how='inner')
+
+    correlation_df = merged_df[activity_cols + weather_cols].corr()
+    plt.figure(figsize=(12, 8))
+    im = plt.imshow(correlation_df.loc[weather_cols, activity_cols], cmap='coolwarm', vmin=-1, vmax=1)
+    plt.colorbar(im, label='Correlation Coefficient')
+    plt.xticks(range(len(activity_cols)), activity_cols, rotation=45, ha='right')
+    plt.yticks(range(len(weather_cols)), weather_cols)
+    plt.title('Correlation between Weather Factors and Activity Levels')
+    plt.tight_layout()
+    plt.show()
+
+    return correlation_df
+
+def plot_windspeed_activity(conn, bins=10):
+    weather_df = pd.read_csv(WEATHER_DATA_PATH)
+    weather_df['datetime'] = pd.to_datetime(weather_df['datetime'])
+    weather_df['date'] = weather_df['datetime'].dt.date
+
+    wind_agg = weather_df.groupby('date')['windspeed'].mean().reset_index()
+
+    activity_cols = ['TotalSteps', 'TotalDistance', 'Calories', 'VeryActiveMinutes', 'FairlyActiveMinutes', 'LightlyActiveMinutes', 'SedentaryMinutes']
+    query = f"SELECT ActivityDate, {', '.join(activity_cols)} FROM daily_activity"
+    activity_df = pd.read_sql_query(query, conn)
+    activity_df['date'] = pd.to_datetime(activity_df['ActivityDate']).dt.date
+    activity_agg = activity_df.groupby('date')[activity_cols].mean().reset_index()
+
+    merged = pd.merge(activity_agg, wind_agg, on='date', how='inner')
+
+    merged['windspeed_bin'] = pd.cut(merged['windspeed'], bins=bins)
+    agg_map = {c: 'mean' for c in activity_cols}
+    agg_map['windspeed'] = 'mean'
+    binned = merged.groupby('windspeed_bin').agg(agg_map).dropna()
+
+    bin_centers = []
+    for interval in binned.index.categories:
+        left = interval.left
+        right = interval.right
+        bin_centers.append((left + right) / 2.0)
+    bin_centers = np.array(bin_centers)
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    colors = plt.cm.tab10.colors
+    for i, col in enumerate(activity_cols):
+        ax.plot(bin_centers, binned[col].values, label=col, color=colors[i % len(colors)], linewidth=2)
+
+    ax.set_xlabel('Windspeed (binned, mean per day)')
+    ax.set_ylabel('Activity metric (mean per day)')
+    ax.set_title('Activity levels vs Windspeed (binned)')
+    ax.legend(loc='best')
+    ax.grid(True, linestyle='--', alpha=0.6)
+    plt.tight_layout()
+    plt.show()
+
+    return fig, binned
+
+
+def task6(conn):
+    plot_weather_activity_correlation(conn)
+    plot_windspeed_activity(conn, bins=5)
 
 
 # Main
@@ -217,6 +299,7 @@ def main():
     task3(df_merged)
     task4(conn)
     task5(conn)
+    task6(conn)
 
     conn.close()
 
