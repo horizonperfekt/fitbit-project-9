@@ -1,10 +1,12 @@
 import os
+import numpy as np
 import pandas as pd
 import sqlite3 as sq
 import matplotlib.pyplot as plt
 from sklearn.linear_model import LinearRegression
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..")
+WEATHER_DATA_PATH = os.path.join(DATA_DIR, "part3", "chicago 2016-03-12 to 2016-04-09.csv")
 
 # Task 1: Classification
 
@@ -235,6 +237,138 @@ def task5(conn):
     plt.show()
 
 
+# Task 6: Correlation weather factors and activity levels
+
+def plot_weather_activity_correlation(conn):
+    weather_df = pd.read_csv(WEATHER_DATA_PATH)
+    
+    weather_df['datetime'] = pd.to_datetime(weather_df['datetime'])
+    weather_df['date'] = weather_df['datetime'].dt.date
+
+    weather_cols = ['temp', 'feelslike', 'humidity', 'precip', 'windspeed', 'cloudcover', 'visibility', 'uvindex']
+    weather_agg = weather_df.groupby('date')[weather_cols].mean().reset_index()
+
+    activity_cols = ['TotalSteps', 'TotalDistance', 'Calories', 'VeryActiveMinutes', 'FairlyActiveMinutes', 'LightlyActiveMinutes', 'SedentaryMinutes']
+    query = f"""
+        SELECT ActivityDate, {', '.join(activity_cols)}
+        FROM daily_activity
+    """
+    activity_df = pd.read_sql_query(query, conn)
+    activity_df['date'] = pd.to_datetime(activity_df['ActivityDate']).dt.date
+    activity_agg = activity_df.groupby('date')[activity_cols].mean().reset_index()
+
+    merged_df = pd.merge(activity_agg, weather_agg, on='date', how='inner')
+
+    correlation_df = merged_df[activity_cols + weather_cols].corr()
+    plt.figure(figsize=(12, 8))
+    im = plt.imshow(correlation_df.loc[weather_cols, activity_cols], cmap='coolwarm', vmin=-1, vmax=1)
+    plt.colorbar(im, label='Correlation Coefficient')
+    plt.xticks(range(len(activity_cols)), activity_cols, rotation=45, ha='right')
+    plt.yticks(range(len(weather_cols)), weather_cols)
+    plt.title('Correlation between Weather Factors and Activity Levels')
+    plt.tight_layout()
+    plt.show()
+
+    return correlation_df
+
+def plot_windspeed_activity(conn, bins=10):
+    weather_df = pd.read_csv(WEATHER_DATA_PATH)
+    weather_df['datetime'] = pd.to_datetime(weather_df['datetime'])
+    weather_df['date'] = weather_df['datetime'].dt.date
+
+    wind_agg = weather_df.groupby('date')['windspeed'].mean().reset_index()
+
+    activity_cols = ['TotalSteps', 'TotalDistance', 'Calories', 'VeryActiveMinutes', 'FairlyActiveMinutes', 'LightlyActiveMinutes', 'SedentaryMinutes']
+    query = f"SELECT ActivityDate, {', '.join(activity_cols)} FROM daily_activity"
+    activity_df = pd.read_sql_query(query, conn)
+    activity_df['date'] = pd.to_datetime(activity_df['ActivityDate']).dt.date
+    activity_agg = activity_df.groupby('date')[activity_cols].mean().reset_index()
+
+    merged = pd.merge(activity_agg, wind_agg, on='date', how='inner')
+
+    merged['windspeed_bin'] = pd.cut(merged['windspeed'], bins=bins)
+    agg_map = {c: 'mean' for c in activity_cols}
+    agg_map['windspeed'] = 'mean'
+    binned = merged.groupby('windspeed_bin').agg(agg_map).dropna()
+
+    bin_centers = []
+    for interval in binned.index.categories:
+        left = interval.left
+        right = interval.right
+        bin_centers.append((left + right) / 2.0)
+    bin_centers = np.array(bin_centers)
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    colors = plt.cm.tab10.colors
+    for i, col in enumerate(activity_cols):
+        ax.plot(bin_centers, binned[col].values, label=col, color=colors[i % len(colors)], linewidth=2)
+
+    ax.set_xlabel('Windspeed (binned, mean per day)')
+    ax.set_ylabel('Activity metric (mean per day)')
+    ax.set_title('Activity levels vs Windspeed (binned)')
+    ax.legend(loc='best')
+    ax.grid(True, linestyle='--', alpha=0.6)
+    plt.tight_layout()
+    plt.show()
+
+    return fig, binned
+
+
+def task6(conn):
+    plot_weather_activity_correlation(conn)
+    plot_windspeed_activity(conn, bins=5)
+
+
+# part 4: Weight log missing value imputation
+
+# Task 7: Weight log missing value imputation
+
+def impute_weight_log(conn):
+    df = pd.read_sql_query("SELECT CAST(Id AS INTEGER) AS Id, Date, WeightKg, WeightPounds, Fat, BMI, IsManualReport FROM weight_log", conn)
+    df['Date'] = pd.to_datetime(df['Date'], format='mixed')
+
+    # Fix WeightKg / WeightPounds using conversion
+    KG_TO_LBS = 2.20462
+    missing_kg = df['WeightKg'].isna() & df['WeightPounds'].notna()
+    df.loc[missing_kg, 'WeightKg'] = df.loc[missing_kg, 'WeightPounds'] / KG_TO_LBS
+
+    missing_lbs = df['WeightPounds'].isna() & df['WeightKg'].notna()
+    df.loc[missing_lbs, 'WeightPounds'] = df.loc[missing_lbs, 'WeightKg'] * KG_TO_LBS
+
+    # Infer height per user and fill missing BMI
+    df['height_m'] = np.sqrt(df['WeightKg'] / df['BMI'])
+    user_height = df.groupby('Id')['height_m'].mean()
+
+    def fill_bmi(row):
+        if pd.isna(row['BMI']):
+            h = user_height.get(row['Id'])
+            if h and not np.isnan(h):
+                return row['WeightKg'] / (h ** 2)
+        return row['BMI']
+
+    df['BMI'] = df.apply(fill_bmi, axis=1)
+    df = df.drop(columns=['height_m'])
+
+    # Fill missing Fat using Deurenberg-inspired BMI formula
+    # Full Deurenberg formula requires age & sex which are unavailable,
+    # so we use Fat% ≈ 1.20 * BMI + offset, where the offset is calibrated from the known Fat observations to anchor estimates to actual data.
+    known_fat = df[df['Fat'].notna()]
+    missing_fat = df['Fat'].isna()
+
+    if len(known_fat) >= 1:
+        offset = (known_fat['Fat'] - 1.20 * known_fat['BMI']).mean()
+        df.loc[missing_fat, 'Fat'] = (1.20 * df.loc[missing_fat, 'BMI'] + offset).clip(lower=0, upper=60)
+    else:
+        df.loc[missing_fat, 'Fat'] = df['Fat'].mean()
+
+    print("=== Missing values after imputation ===")
+    print(df.isnull().sum())
+    print()
+    print(df)
+
+    return df
+
+
 # Main
 
 def main():
@@ -245,6 +379,9 @@ def main():
     task3(conn, 4020332650)
     task4(conn)
     task5(conn)
+    task6(conn)
+    impute_weight_log(conn)
+    
 
     conn.close()
 
