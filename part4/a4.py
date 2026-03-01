@@ -9,7 +9,6 @@ DATA_DIR = os.path.join(os.path.dirname(__file__), "..")
 WEATHER_DATA_PATH = os.path.join(DATA_DIR, "part3", "chicago 2016-03-12 to 2016-04-09.csv")
 
 # Task 1: Classification
-
 def classify_ids(df):
     df_id_class = pd.DataFrame(columns=['Id', 'Class'])
 
@@ -37,7 +36,6 @@ def task1():
 
 
 # Task 2: Database analysis
-
 def task2(conn):
     df_sleep = pd.read_sql_query("""
         SELECT CAST(Id as INTEGER) as Id, date, logId, COUNT(*) as sleep_duration_minutes
@@ -127,7 +125,6 @@ def task3(conn, user_id, start_date=None, end_date=None):
     
 
 # Task 4: 4-hour block averages
-
 BLOCKS = ['0-4', '4-8', '8-12', '12-16', '16-20', '20-24']
 
 def assign_block(hour):
@@ -199,7 +196,6 @@ def task4(conn):
 
 
 # Task 5: Heart rate and exercise intensity
-
 def plot_individual(conn, individual_id):
     df_hr = pd.read_sql_query(
         "SELECT Time, Value FROM heart_rate WHERE CAST(Id AS INTEGER) = ?",
@@ -238,7 +234,6 @@ def task5(conn):
 
 
 # Task 6: Correlation weather factors and activity levels
-
 def plot_weather_activity_correlation(conn):
     weather_df = pd.read_csv(WEATHER_DATA_PATH)
     
@@ -318,11 +313,7 @@ def task6(conn):
     plot_weather_activity_correlation(conn)
     plot_windspeed_activity(conn, bins=5)
 
-
-# part 4: Weight log missing value imputation
-
 # Task 7: Weight log missing value imputation
-
 def impute_weight_log(conn):
     df = pd.read_sql_query("SELECT CAST(Id AS INTEGER) AS Id, Date, WeightKg, WeightPounds, Fat, BMI, IsManualReport FROM weight_log", conn)
     df['Date'] = pd.to_datetime(df['Date'], format='mixed')
@@ -368,9 +359,7 @@ def impute_weight_log(conn):
 
     return df
 
-
-# Main
-
+# main
 def main():
     conn = sq.connect(os.path.join(DATA_DIR, "fitbit_database.db"))
 
@@ -382,9 +371,7 @@ def main():
     task6(conn)
     impute_weight_log(conn)
     
-
     conn.close()
-
 
 if __name__ == "__main__":
     main()
