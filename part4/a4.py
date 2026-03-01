@@ -58,43 +58,71 @@ def task2(conn):
     return df_merged
 
 
-# Task 3: Linear regression
+# Task 3: Summaries
+def get_daily_activity(conn, user_id=None, start_date=None, end_date=None):
+    query = "SELECT * FROM daily_activity WHERE 1=1"
+    params = []
 
-def task3(df_merged):
-    X = df_merged[['total_active_minutes']].values
-    y = df_merged['sleep_duration_minutes'].values
+    if user_id:
+        query += " AND Id = ?"
+        params.append(user_id)
 
-    model = LinearRegression()
-    model.fit(X, y)
+    if start_date:
+        query += " AND ActivityDate >= ?"
+        params.append(start_date)
 
-    print("Linear regression: Sleep duration vs Active minutes ===")
-    print(f"Slope (coefficient): {model.coef_[0]:.4f}")
-    print(f"Intercept: {model.intercept_:.2f} minutes")
-    print(f"R²: {model.score(X, y):.4f}")
+    if end_date:
+        query += " AND ActivityDate <= ?"
+        params.append(end_date)
 
-    plt.figure(figsize=(8, 5))
-    plt.scatter(X, y, alpha=0.5, label='Data points')
-    plt.plot(X, model.predict(X), color='red', linewidth=2, label='Regression line')
-    plt.xlabel('Total Active minutes (very + fairly + light)')
-    plt.ylabel('Sleep duration (minutes)')
-    plt.title('Sleep vs. Active minutes (all users)')
-    plt.legend()
-    plt.grid(True, linestyle='--', alpha=0.6)
-    plt.tight_layout()
-    plt.show()
+    return pd.read_sql_query(query, conn, params=params)
 
-    print("Per-individual Regressions")
-    for user_id in df_merged['Id'].unique():
-        user_data = df_merged[df_merged['Id'] == user_id]
-        if len(user_data) > 1:
-            X_u = user_data[['total_active_minutes']].values
-            y_u = user_data['sleep_duration_minutes'].values
-            model_u = LinearRegression()
-            model_u.fit(X_u, y_u)
-            print(f"User {user_id}: slope = {model_u.coef_[0]:.4f}, R² = {model_u.score(X_u, y_u):.4f} (n={len(user_data)})")
-        else:
-            print(f"User {user_id}: insufficient data (only {len(user_data)} day)")
+def numerical_summary(df):
+    return {
+        "Total Steps": df["TotalSteps"].sum(),
+        "Average Daily Steps": df["TotalSteps"].mean(),
+        "Total Calories": df["Calories"].sum(),
+        "Average Sedentary Minutes": df["SedentaryMinutes"].mean(),
+        "Average Very Active Minutes": df["VeryActiveMinutes"].mean()
+    }
 
+def daily_summary(df):
+    return (
+        df.groupby("ActivityDate")
+          .agg({
+              "TotalSteps": "sum",
+              "Calories": "sum",
+              "VeryActiveMinutes": "sum",
+              "SedentaryMinutes": "sum"
+          })
+          .reset_index()
+    )
+
+def get_dashboard_data(conn, user_id, start_date=None, end_date=None):
+    df = get_daily_activity(conn, user_id, start_date, end_date)
+
+    daily = daily_summary(df)
+    numbers = numerical_summary(df)
+
+    return {
+        "daily_data": daily,
+        "numerical_summary": numbers
+    }
+
+def task3(conn, user_id, start_date=None, end_date=None):
+    dashboard_data = get_dashboard_data(conn, user_id, start_date, end_date)
+
+    print("\nNumerical Summary:")
+    for key, value in dashboard_data["numerical_summary"].items():
+        print(f"{key}: {value:.2f}")
+
+    print("\nDaily Summary Head:")
+    print(dashboard_data["daily_data"].head())
+
+    return dashboard_data
+    
+
+    
 
 # Task 4: 4-hour block averages
 
@@ -214,7 +242,7 @@ def main():
 
     task1()
     df_merged = task2(conn)
-    task3(df_merged)
+    task3(conn, 4020332650)
     task4(conn)
     task5(conn)
 
