@@ -240,7 +240,7 @@ def plot_weather_activity_correlation(conn):
     weather_df['datetime'] = pd.to_datetime(weather_df['datetime'])
     weather_df['date'] = weather_df['datetime'].dt.date
 
-    weather_cols = ['temp', 'feelslike', 'humidity', 'precip', 'windspeed', 'cloudcover', 'visibility', 'uvindex']
+    weather_cols = ['temp', 'feelslike', 'humidity', 'precip', 'windspeed', 'cloudcover', 'visibility']
     weather_agg = weather_df.groupby('date')[weather_cols].mean().reset_index()
 
     activity_cols = ['TotalSteps', 'TotalDistance', 'Calories', 'VeryActiveMinutes', 'FairlyActiveMinutes', 'LightlyActiveMinutes', 'SedentaryMinutes']
@@ -359,6 +359,202 @@ def impute_weight_log(conn):
 
     return df
 
+# Task 8: General statistics conclusions & dashboard visualizations
+def statistics_conclusions(conn, user_id):
+    day_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    class_order = ["Light user", "Moderate user", "Heavy user"]
+
+    df_sleep = pd.read_sql_query("""
+        SELECT CAST(Id AS INTEGER) AS Id, date, logId
+        FROM minute_sleep
+    """, conn)
+    df_sleep["datetime"] = pd.to_datetime(df_sleep["date"], format="mixed")
+
+    sleep_logs = (df_sleep.groupby(["Id", "logId"])
+        .agg(sleep_minutes=("date", "size"),
+             date=("datetime", lambda s: s.dt.date.min()))
+        .reset_index())
+
+    df_activity = pd.read_sql_query("""
+        SELECT
+            CAST(Id AS INTEGER) AS Id,
+            ActivityDate,
+            TotalSteps,
+            Calories,
+            SedentaryMinutes,
+            VeryActiveMinutes,
+            FairlyActiveMinutes,
+            LightlyActiveMinutes
+        FROM daily_activity
+    """, conn)
+
+    df_activity["date"] = pd.to_datetime(df_activity["ActivityDate"], format="mixed").dt.date
+    df_activity["active_minutes"] = (
+        df_activity["VeryActiveMinutes"] +
+        df_activity["FairlyActiveMinutes"] +
+        df_activity["LightlyActiveMinutes"])
+
+    merged = pd.merge(
+        df_activity,
+        sleep_logs[["Id", "date", "sleep_minutes"]],
+        on=["Id", "date"],
+        how="inner")
+
+    activity_sleep_stats = {
+        "rows": int(len(merged)),
+        "users": int(merged["Id"].nunique()) if len(merged) else 0,
+        "corr_active_vs_sleep": float(merged["active_minutes"].corr(merged["sleep_minutes"])),
+        "corr_steps_vs_sleep": float(merged["TotalSteps"].corr(merged["sleep_minutes"]))}
+
+    X = merged[["active_minutes"]].values
+    y = merged["sleep_minutes"].values
+    model = LinearRegression()
+    model.fit(X, y)
+    activity_sleep_stats["regression"] = {
+        "slope": float(model.coef_[0]),
+        "intercept": float(model.intercept_),
+        "r2": float(model.score(X, y))
+        }
+
+    merged["date_dt"] = pd.to_datetime(merged["date"])
+    merged["is_weekend"] = merged["date_dt"].dt.weekday >= 5
+
+
+    id_counts = df_activity.groupby("Id").size().reset_index(name="Count")
+    id_classes = classify_ids(id_counts)
+
+    hourly_steps = pd.read_sql_query("""
+        SELECT CAST(Id AS INTEGER) AS Id, ActivityHour, StepTotal
+        FROM hourly_steps
+    """, conn)
+    hourly_steps["ActivityHour"] = pd.to_datetime(hourly_steps["ActivityHour"], format="mixed")
+    hourly_steps["date"] = hourly_steps["ActivityHour"].dt.date
+    hourly_steps["block"] = hourly_steps["ActivityHour"].dt.hour.apply(assign_block)
+    hourly_steps = hourly_steps.merge(id_classes, on="Id", how="inner")
+
+    class_block = (
+        hourly_steps.groupby(["Class", "Id", "date", "block"], as_index=False)["StepTotal"].sum()
+        .groupby(["Class", "block"], as_index=False)["StepTotal"].mean()
+        .pivot(index="Class", columns="block", values="StepTotal")
+        .reindex(index=class_order, columns=BLOCKS)
+    )
+
+    df_activity["weekday"] = pd.to_datetime(df_activity["date"]).dt.day_name()
+    dow_breakdown = (
+        df_activity.groupby("weekday")[["SedentaryMinutes", "LightlyActiveMinutes", "FairlyActiveMinutes", "VeryActiveMinutes"]]
+        .mean()
+        .reindex(day_order)
+    )
+
+    class_counts = id_classes["Class"].value_counts().reindex(class_order).fillna(0)
+    hourly_intensity = pd.read_sql_query("""
+        SELECT CAST(Id AS INTEGER) AS Id, TotalIntensity
+        FROM hourly_intensity
+    """, conn).merge(id_classes, on="Id", how="inner")
+
+    # 4) Plot A: user-specific average steps, calories and sleep patterns throughout the week
+    user_daily_activity = df_activity[df_activity["Id"] == int(user_id)].copy()
+    user_daily_activity["date_dt"] = pd.to_datetime(user_daily_activity["date"])
+    user_daily_activity["weekday"] = user_daily_activity["date_dt"].dt.day_name()
+
+    dow_metrics = (
+        user_daily_activity.groupby("weekday")[["TotalSteps", "Calories"]]
+        .mean()
+        .reindex(day_order)
+    )
+
+    user_sleep_logs = sleep_logs[sleep_logs["Id"] == int(user_id)].copy()
+
+    fig_a, axes_a = plt.subplots(1, 2, figsize=(16, 6))
+
+    x = np.arange(len(day_order))
+    width = 0.38
+    axes_a[0].bar(x - width / 2, dow_metrics["TotalSteps"].values, width=width, label="Avg Steps", color="steelblue")
+    axes_a[0].bar(x + width / 2, dow_metrics["Calories"].values, width=width, label="Avg Calories", color="tomato")
+    axes_a[0].set_xticks(x)
+    axes_a[0].set_xticklabels(day_order, rotation=30, ha="right")
+    axes_a[0].set_title(f"User {user_id}: Avg Steps & Calories by Day")
+    axes_a[0].set_ylabel("Average Value")
+    axes_a[0].grid(axis="y", linestyle="--", alpha=0.4)
+    axes_a[0].legend()
+
+    if user_sleep_logs.empty:
+        axes_a[1].text(0.5, 0.5, f"No sleep logs for user {user_id}", ha="center", va="center")
+        axes_a[1].set_xticks([])
+        axes_a[1].set_yticks([])
+    else:
+        user_sleep_logs["weekday"] = pd.to_datetime(user_sleep_logs["date"]).dt.day_name()
+        box_data, labels = [], []
+        for d in day_order:
+            vals = user_sleep_logs.loc[user_sleep_logs["weekday"] == d, "sleep_minutes"].dropna().values
+            if len(vals) > 0:
+                box_data.append(vals)
+                labels.append(d)
+
+        if len(box_data) > 0:
+            axes_a[1].boxplot(box_data, tick_labels=labels, showfliers=False)
+            axes_a[1].tick_params(axis="x", rotation=30)
+            axes_a[1].set_ylabel("Sleep Minutes")
+            axes_a[1].grid(axis="y", linestyle="--", alpha=0.4)
+        else:
+            axes_a[1].text(0.5, 0.5, f"No sleep logs for user {user_id}", ha="center", va="center")
+            axes_a[1].set_xticks([])
+            axes_a[1].set_yticks([])
+    axes_a[1].set_title(f"User {user_id}: Sleep Patterns by Day")
+
+    plt.tight_layout()
+    plt.show()
+
+    # 5) Plot B: average day steps taken per user class in 4-hour blocks and day of week activity levels breakdown
+    fig_b, ax_b = plt.subplots(1, 2, figsize=(13, 6), squeeze=False)
+
+    x = np.arange(len(BLOCKS))
+    width = 0.25
+    for i, cls in enumerate(class_order):
+        vals = class_block.loc[cls].values if cls in class_block.index else np.zeros(len(BLOCKS))
+        ax_b[0, 0].bar(x + (i - 1) * width, vals, width=width, label=cls)
+    ax_b[0, 0].set_xticks(x)
+    ax_b[0, 0].set_xticklabels(BLOCKS)
+    ax_b[0, 0].set_title("Intra-Day Steps by Class (4-hour blocks)")
+    ax_b[0, 0].set_ylabel("Avg Steps")
+    ax_b[0, 0].legend()
+
+    bottoms = np.zeros(len(dow_breakdown))
+    for col in ["SedentaryMinutes", "LightlyActiveMinutes", "FairlyActiveMinutes", "VeryActiveMinutes"]:
+        ax_b[0, 1].bar(dow_breakdown.index, dow_breakdown[col].values, bottom=bottoms, label=col)
+        bottoms += dow_breakdown[col].values
+    ax_b[0, 1].set_title("Day-of-Week Activity Breakdown")
+    ax_b[0, 1].set_ylabel("Average Minutes")
+    ax_b[0, 1].tick_params(axis="x", rotation=30)
+    ax_b[0, 1].legend(fontsize=8)
+
+    plt.tight_layout()
+    plt.show()
+
+    # 6) Plot C: class distribution and hourly intensity distribution by user class
+    fig_c, ax_c = plt.subplots(1, 2, figsize=(12, 5))
+
+    ax_c[0].bar(class_counts.index, class_counts.values, color=["#9ecae1", "#6baed6", "#3182bd"])
+    ax_c[0].set_title("User Class Distribution")
+    ax_c[0].set_ylabel("Number of Users")
+    ax_c[0].grid(axis="y", linestyle="--", alpha=0.4)
+
+    box_data = [
+        hourly_intensity.loc[hourly_intensity["Class"] == "Light user", "TotalIntensity"].dropna().values,
+        hourly_intensity.loc[hourly_intensity["Class"] == "Moderate user", "TotalIntensity"].dropna().values,
+        hourly_intensity.loc[hourly_intensity["Class"] == "Heavy user", "TotalIntensity"].dropna().values
+    ]
+    ax_c[1].boxplot(box_data, tick_labels=class_order, showfliers=False)
+    ax_c[1].set_title("Hourly Intensity Distribution by Class")
+    ax_c[1].set_ylabel("TotalIntensity")
+    ax_c[1].grid(axis="y", linestyle="--", alpha=0.4)
+
+    plt.tight_layout()
+    plt.show()
+
+    return None
+
+
 # main
 def main():
     conn = sq.connect(os.path.join(DATA_DIR, "fitbit_database.db"))
@@ -370,6 +566,7 @@ def main():
     task5(conn)
     task6(conn)
     impute_weight_log(conn)
+    statistics_conclusions(conn, 4020332650) 
     
     conn.close()
 
