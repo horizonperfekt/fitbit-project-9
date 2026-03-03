@@ -4,6 +4,7 @@ import sqlite3 as sq
 import matplotlib.pyplot as plt
 from sklearn.linear_model import LinearRegression
 import numpy as np
+from statistics import NormalDist
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..")
 WEATHER_DATA_PATH = os.path.join(DATA_DIR, "part3", "chicago 2016-03-12 to 2016-04-09.csv")
@@ -67,11 +68,46 @@ def task3(df_merged):
 
     model = LinearRegression()
     model.fit(X, y)
+    y_pred = model.predict(X)
+    residuals = y - y_pred
 
     print("Linear regression: Sleep duration vs Active minutes ===")
     print(f"Slope (coefficient): {model.coef_[0]:.4f}")
     print(f"Intercept: {model.intercept_:.2f} minutes")
     print(f"R²: {model.score(X, y):.4f}")
+
+    # Normality diagnostics for residuals
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    residual_mean = residuals.mean()
+    residual_std = residuals.std(ddof=1)
+
+    # 1) Histogram + fitted normal curve
+    axes[0].hist(residuals, bins=20, density=True, alpha=0.7, color='steelblue', edgecolor='black')
+    x_vals = np.linspace(residuals.min(), residuals.max(), 300)
+    normal_pdf = (1.0 / (residual_std * np.sqrt(2 * np.pi))) * np.exp(-0.5 * ((x_vals - residual_mean) / residual_std) ** 2)
+    axes[0].plot(x_vals, normal_pdf, color='crimson', linewidth=2, label='Normal curve')
+    axes[0].legend()
+    axes[0].set_title('Residual Histogram')
+    axes[0].set_xlabel('Residual (minutes)')
+    axes[0].set_ylabel('Density')
+    axes[0].grid(True, linestyle='--', alpha=0.6)
+
+    # 2) Q-Q plot
+    sorted_residuals = np.sort(residuals)
+    n = len(sorted_residuals)
+    probs = (np.arange(1, n + 1) - 0.5) / n
+    theoretical_quantiles = np.array([NormalDist().inv_cdf(p) for p in probs])
+    axes[1].scatter(theoretical_quantiles, sorted_residuals, alpha=0.75, color='darkorange')
+    qq_line = residual_mean + residual_std * theoretical_quantiles
+    axes[1].plot(theoretical_quantiles, qq_line, color='black', linewidth=2, label='Reference line')
+    axes[1].legend()
+    axes[1].set_title('Q-Q Plot of Residuals')
+    axes[1].set_xlabel('Theoretical Quantiles (Normal)')
+    axes[1].set_ylabel('Sample Quantiles (Residuals)')
+    axes[1].grid(True, linestyle='--', alpha=0.6)
+
+    plt.tight_layout()
+    plt.show()
 
     plt.figure(figsize=(8, 5))
     plt.scatter(X, y, alpha=0.5, label='Data points')
@@ -95,6 +131,7 @@ def task3(df_merged):
             print(f"User {user_id}: slope = {model_u.coef_[0]:.4f}, R² = {model_u.score(X_u, y_u):.4f} (n={len(user_data)})")
         else:
             print(f"User {user_id}: insufficient data (only {len(user_data)} day)")
+    
 
 
 # Task 4: 4-hour block averages
