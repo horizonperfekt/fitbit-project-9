@@ -940,16 +940,13 @@ def main():
     st.set_page_config(page_title="Fitbit Analytics Dashboard", layout="wide")
 
     # ── Sidebar ──────────────────────────────────────────────────────────────
-    st.sidebar.image(
-        "https://upload.wikimedia.org/wikipedia/commons/thumb/5/5e/Fitbit_logo16.svg/320px-Fitbit_logo16.svg.png",
-        width=140,
-    )
+    st.sidebar.title("📊 Fitbit Analytics Dashboard")
+    st.sidebar.divider()
     st.sidebar.title("Navigation")
     page = st.sidebar.radio(
         "Go to",
         ["Overview", "Individual Profile", "Sleep Analysis", "Activity Blocks", "Weight & BMI"],
     )
-
     st.sidebar.divider()
     st.sidebar.header("Filters")
 
