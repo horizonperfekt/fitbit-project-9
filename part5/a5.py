@@ -8,7 +8,7 @@ st.set_page_config(
 )
 
 st.title("📊 Fitbit Analytics Dashboard")
-st.markdown("Mockup version — layout only (no database yet)")
+st.markdown("Mockup Version — Layout only (no database yet)")
 
 st.sidebar.header("Filters")
 
@@ -18,14 +18,21 @@ user_id = st.sidebar.selectbox(
     [1503960366, 1624580081, 4020332650]
 )
 
+DATA_START = date(2016, 3, 12)
+DATA_END   = date(2016, 4, 9)
+
 start_date = st.sidebar.date_input(
     "Start Date",
-    date(2016, 4, 1)
+    value=date(2016, 3, 12),
+    min_value=DATA_START,
+    max_value=DATA_END
 )
 
 end_date = st.sidebar.date_input(
     "End Date",
-    date(2016, 4, 30)
+    value=date(2016, 4, 9),
+    min_value=DATA_START,
+    max_value=DATA_END
 )
 
 time_block = st.sidebar.selectbox(
