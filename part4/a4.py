@@ -7,6 +7,7 @@ from sklearn.linear_model import LinearRegression
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..")
 WEATHER_DATA_PATH = os.path.join(DATA_DIR, "part3", "chicago 2016-03-12 to 2016-04-09.csv")
+CLASS_ORDER = ['Light user', 'Moderate user', 'Heavy user']
 
 # Task 1: Classification
 def classify_ids(df):
@@ -21,11 +22,28 @@ def classify_ids(df):
         else:
             df_id_class = pd.concat([df_id_class, pd.DataFrame({'Id': [id], 'Class': ['Heavy user']})], ignore_index=True)
 
-    order = ['Light user', 'Moderate user', 'Heavy user']
-    df_id_class['Class'] = pd.Categorical(df_id_class['Class'], categories=order, ordered=True)
+    df_id_class['Class'] = pd.Categorical(df_id_class['Class'], categories=CLASS_ORDER, ordered=True)
     df_id_class = df_id_class.sort_values('Class').reset_index(drop=True)
 
     return df_id_class
+
+
+def classify_users_by_steps(activity_df, low_threshold=10000, high_threshold=15000):
+    avg_steps = (
+        activity_df.groupby('Id', as_index=False)['TotalSteps']
+        .mean()
+        .rename(columns={'TotalSteps': 'avg_daily_steps'})
+    )
+
+    conditions = [
+        avg_steps['avg_daily_steps'] < low_threshold,
+        avg_steps['avg_daily_steps'] < high_threshold,
+    ]
+    labels = ['Light user', 'Moderate user']
+    avg_steps['Class'] = np.select(conditions, labels, default='Heavy user')
+    avg_steps['Class'] = pd.Categorical(avg_steps['Class'], categories=CLASS_ORDER, ordered=True)
+
+    return avg_steps.sort_values(['Class', 'avg_daily_steps'], ascending=[True, False]).reset_index(drop=True)
 
 
 def task1():

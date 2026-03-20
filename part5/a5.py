@@ -1,991 +1,712 @@
 import os
 import sqlite3
+import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
-from sklearn.linear_model import LinearRegression
 
-# ── Paths ──────────────────────────────────────────────────────────────────────
-DATA_DIR = os.path.join(os.path.dirname(__file__), "..")
-DB_PATH = os.path.join(DATA_DIR, "fitbit_database.db")
-WEATHER_PATH = os.path.join(DATA_DIR, "part3", "chicago 2016-03-12 to 2016-04-09.csv")
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "part4"))
+import a4
 
-BLOCKS = ["0-4", "4-8", "8-12", "12-16", "16-20", "20-24"]
+DB_PATH = os.path.join(os.path.dirname(__file__), "..", "fitbit_database.db")
 DAY_ORDER = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-CLASS_ORDER = ["Light user", "Moderate user", "Heavy user"]
+ACTIVITY_COLORS = {
+    "SedentaryMinutes": "#c31e15",
+    "LightlyActiveMinutes": "#ffc516",
+    "FairlyActiveMinutes": "#0871b2",
+    "VeryActiveMinutes": "#00a84c",
+}
+CLASS_COLORS = {
+    "Light user": "#9ecae1",
+    "Moderate user": "#f6ae2d",
+    "Heavy user": "#d1495b",
+}
 
-# ── DB connection ───────────────────────────────────────────────────────────────
+
 @st.cache_resource
 def get_conn():
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 
 
-# ── Helper functions ────────────────────────────────────────────────────────────
-def assign_block(hour):
-    if hour < 4:
-        return "0-4"
-    elif hour < 8:
-        return "4-8"
-    elif hour < 12:
-        return "8-12"
-    elif hour < 16:
-        return "12-16"
-    elif hour < 20:
-        return "16-20"
-    else:
-        return "20-24"
+CONN = get_conn()
 
 
-def classify_ids(id_counts_df):
-    rows = []
-    for _, row in id_counts_df.iterrows():
-        c = row["Count"]
-        if c <= 10:
-            cls = "Light user"
-        elif c <= 15:
-            cls = "Moderate user"
-        else:
-            cls = "Heavy user"
-        rows.append({"Id": row["Id"], "Class": cls})
-    df = pd.DataFrame(rows)
-    df["Class"] = pd.Categorical(df["Class"], categories=CLASS_ORDER, ordered=True)
-    return df.sort_values("Class").reset_index(drop=True)
-
-
-# ── Cached data loaders ─────────────────────────────────────────────────────────
 @st.cache_data
 def load_daily_activity():
-    conn = get_conn()
-    df = pd.read_sql_query(
-        "SELECT CAST(Id AS INTEGER) AS Id, ActivityDate, TotalSteps, TotalDistance, "
-        "Calories, VeryActiveMinutes, FairlyActiveMinutes, LightlyActiveMinutes, "
-        "SedentaryMinutes FROM daily_activity",
-        conn,
-    )
-    df["ActivityDate"] = pd.to_datetime(df["ActivityDate"], format="mixed")
-    df["date"] = df["ActivityDate"].dt.date
-    df["weekday"] = df["ActivityDate"].dt.day_name()
+    df = pd.read_sql_query("SELECT * FROM daily_activity", CONN)
+    df["Id"] = df["Id"].astype(int)
+    df["ActivityDate"] = pd.to_datetime(df["ActivityDate"], format="mixed").dt.normalize()
     df["active_minutes"] = (
         df["VeryActiveMinutes"] + df["FairlyActiveMinutes"] + df["LightlyActiveMinutes"]
     )
+    df["weekday"] = df["ActivityDate"].dt.day_name()
     return df
 
 
 @st.cache_data
-def load_sleep():
-    conn = get_conn()
+def load_sleep_daily():
     df = pd.read_sql_query(
-        "SELECT CAST(Id AS INTEGER) AS Id, date, logId FROM minute_sleep", conn
+        """
+        SELECT CAST(Id AS INTEGER) AS Id, date, logId
+        FROM minute_sleep
+        """,
+        CONN,
     )
     df["datetime"] = pd.to_datetime(df["date"], format="mixed")
-    sleep_logs = (
-        df.groupby(["Id", "logId"])
+    sleep_daily = (
+        df.groupby(["Id", "logId"], as_index=False)
         .agg(
             sleep_minutes=("date", "size"),
-            date=("datetime", lambda s: s.dt.date.min()),
+            SleepDate=("datetime", lambda s: s.min().normalize()),
         )
-        .reset_index()
     )
-    sleep_logs["weekday"] = pd.to_datetime(sleep_logs["date"]).dt.day_name()
-    sleep_logs["is_weekend"] = pd.to_datetime(sleep_logs["date"]).dt.weekday >= 5
-    return sleep_logs
+    sleep_daily["weekday"] = sleep_daily["SleepDate"].dt.day_name()
+    return sleep_daily
 
 
 @st.cache_data
 def load_hourly_steps():
-    conn = get_conn()
     df = pd.read_sql_query(
-        "SELECT CAST(Id AS INTEGER) AS Id, ActivityHour, StepTotal FROM hourly_steps", conn
+        "SELECT CAST(Id AS INTEGER) AS Id, ActivityHour, StepTotal FROM hourly_steps",
+        CONN,
     )
     df["ActivityHour"] = pd.to_datetime(df["ActivityHour"], format="mixed")
-    df["date"] = df["ActivityHour"].dt.date
+    df["date"] = df["ActivityHour"].dt.normalize()
     df["hour"] = df["ActivityHour"].dt.hour
-    df["block"] = df["hour"].apply(assign_block)
-    return df
-
-
-@st.cache_data
-def load_hourly_calories():
-    conn = get_conn()
-    df = pd.read_sql_query(
-        "SELECT CAST(Id AS INTEGER) AS Id, ActivityHour, Calories FROM hourly_calories", conn
-    )
-    df["ActivityHour"] = pd.to_datetime(df["ActivityHour"], format="mixed")
-    df["date"] = df["ActivityHour"].dt.date
-    df["hour"] = df["ActivityHour"].dt.hour
-    df["block"] = df["hour"].apply(assign_block)
+    df["weekday"] = df["ActivityHour"].dt.day_name()
+    df["block"] = df["hour"].apply(a4.assign_block)
     return df
 
 
 @st.cache_data
 def load_hourly_intensity():
-    conn = get_conn()
     df = pd.read_sql_query(
         "SELECT CAST(Id AS INTEGER) AS Id, ActivityHour, TotalIntensity FROM hourly_intensity",
-        conn,
+        CONN,
     )
     df["ActivityHour"] = pd.to_datetime(df["ActivityHour"], format="mixed")
-    df["date"] = df["ActivityHour"].dt.date
-    df["block"] = df["ActivityHour"].dt.hour.apply(assign_block)
+    df["date"] = df["ActivityHour"].dt.normalize()
+    df["hour"] = df["ActivityHour"].dt.hour
     return df
 
 
 @st.cache_data
-def load_heart_rate():
-    conn = get_conn()
-    df = pd.read_sql_query(
-        "SELECT CAST(Id AS INTEGER) AS Id, Time, Value FROM heart_rate", conn
+def load_daily_intensity():
+    df = load_hourly_intensity()
+    return (
+        df.groupby(["Id", "date"], as_index=False)["TotalIntensity"]
+        .sum()
+        .rename(columns={"date": "ActivityDate", "TotalIntensity": "daily_intensity"})
     )
-    df["Time"] = pd.to_datetime(df["Time"], format="mixed")
-    df["date"] = df["Time"].dt.date
-    return df
-
-
-@st.cache_data
-def load_weight():
-    conn = get_conn()
-    df = pd.read_sql_query(
-        "SELECT CAST(Id AS INTEGER) AS Id, Date, WeightKg, BMI, Fat FROM weight_log", conn
-    )
-    df["Date"] = pd.to_datetime(df["Date"], format="mixed")
-    return df
 
 
 @st.cache_data
 def load_user_classes():
-    df = load_daily_activity()
-    id_counts = df.groupby("Id").size().reset_index(name="Count")
-    return classify_ids(id_counts)
+    return a4.classify_users_by_steps(load_daily_activity())
 
 
-# ── Page helpers ────────────────────────────────────────────────────────────────
-def fmt_num(n, decimals=0):
-    if pd.isna(n):
-        return "N/A"
-    fmt = f"{{:,.{decimals}f}}"
-    return fmt.format(n)
+@st.cache_data
+def load_user_summary():
+    activity = load_daily_activity()
+    sleep = load_sleep_daily()
+    classes = load_user_classes()[["Id", "Class", "avg_daily_steps"]]
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  PAGE 1 – Overview
-# ═══════════════════════════════════════════════════════════════════════════════
-def page_overview(start_date, end_date):
-    st.title("Fitbit Research – Overview")
-    st.markdown(
-        "General statistics for the Fitbit wearable study (March – April 2016, Chicago area)."
+    activity_summary = (
+        activity.groupby("Id", as_index=False)
+        .agg(
+            avg_daily_steps=("TotalSteps", "mean"),
+            avg_daily_calories=("Calories", "mean"),
+            avg_active_minutes=("active_minutes", "mean"),
+        )
+    )
+    sleep_summary = (
+        sleep.groupby("Id", as_index=False)["sleep_minutes"]
+        .mean()
+        .rename(columns={"sleep_minutes": "avg_daily_sleep"})
     )
 
-    df_act = load_daily_activity()
-    df_sleep = load_sleep()
-    user_classes = load_user_classes()
+    summary = activity_summary.merge(sleep_summary, on="Id", how="left")
+    summary = summary.merge(classes[["Id", "Class"]], on="Id", how="left")
+    return summary.sort_values("avg_daily_steps", ascending=False).reset_index(drop=True)
 
-    # Apply date filter
-    mask = (df_act["date"] >= start_date) & (df_act["date"] <= end_date)
-    df = df_act[mask].copy()
 
-    sleep_mask = (df_sleep["date"] >= start_date) & (df_sleep["date"] <= end_date)
-    df_sl = df_sleep[sleep_mask].copy()
+def get_date_bounds():
+    activity = load_daily_activity()
+    return activity["ActivityDate"].min().date(), activity["ActivityDate"].max().date()
 
-    # ── Numerical summary ────────────────────────────────────────────────────
-    st.subheader("Key Metrics")
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Participants", fmt_num(df["Id"].nunique()))
-    c2.metric("Avg Daily Steps", fmt_num(df["TotalSteps"].mean()))
-    c3.metric("Avg Calories / Day", fmt_num(df["Calories"].mean()))
-    c4.metric("Avg Active Min / Day", fmt_num(df["active_minutes"].mean()))
-    avg_sleep = df_sl["sleep_minutes"].mean()
-    c5.metric("Avg Sleep (min)", fmt_num(avg_sleep))
 
-    st.divider()
+def filter_daily_activity(user_choice, start_date, end_date):
+    df = load_daily_activity()
+    mask = (df["ActivityDate"].dt.date >= start_date) & (df["ActivityDate"].dt.date <= end_date)
+    if user_choice != "All Users":
+        mask &= df["Id"] == int(user_choice)
+    return df.loc[mask].copy()
 
-    # ── Graphical summaries ──────────────────────────────────────────────────
-    col_left, col_right = st.columns(2)
 
-    # 1) Daily average steps over time
-    with col_left:
-        st.subheader("Daily Average Steps (all users)")
-        daily_steps = df.groupby("date")["TotalSteps"].mean().reset_index()
-        daily_steps.columns = ["Date", "Avg Steps"]
-        st.line_chart(daily_steps.set_index("Date"), use_container_width=True)
+def filter_sleep_daily(user_choice, start_date, end_date):
+    df = load_sleep_daily()
+    mask = (df["SleepDate"].dt.date >= start_date) & (df["SleepDate"].dt.date <= end_date)
+    if user_choice != "All Users":
+        mask &= df["Id"] == int(user_choice)
+    return df.loc[mask].copy()
 
-    # 2) User class distribution
-    with col_right:
-        st.subheader("User Classification")
-        class_counts = (
-            user_classes["Class"].value_counts().reindex(CLASS_ORDER).fillna(0)
+
+def filter_hourly_steps(user_choice, start_date, end_date):
+    df = load_hourly_steps()
+    mask = (df["date"].dt.date >= start_date) & (df["date"].dt.date <= end_date)
+    if user_choice != "All Users":
+        mask &= df["Id"] == int(user_choice)
+    return df.loc[mask].copy()
+
+
+def build_activity_sleep_dataset(start_date, end_date):
+    activity = filter_daily_activity("All Users", start_date, end_date)
+    sleep = filter_sleep_daily("All Users", start_date, end_date)
+    intensity = load_daily_intensity()
+    intensity = intensity[
+        (intensity["ActivityDate"].dt.date >= start_date)
+        & (intensity["ActivityDate"].dt.date <= end_date)
+    ].copy()
+
+    merged = activity.merge(
+        sleep[["Id", "SleepDate", "sleep_minutes"]],
+        left_on=["Id", "ActivityDate"],
+        right_on=["Id", "SleepDate"],
+        how="inner",
+    )
+    merged = merged.merge(intensity, on=["Id", "ActivityDate"], how="left")
+    merged = merged.merge(load_user_classes()[["Id", "Class"]], on="Id", how="left")
+    return merged.sort_values(["Id", "ActivityDate"]).reset_index(drop=True)
+
+
+def format_user_option(user_id):
+    return "All Users" if user_id == "All Users" else f"User {user_id}"
+
+
+def ensure_specific_user(user_choice, page_name):
+    if user_choice == "All Users":
+        st.info(f"{page_name} requires a specific user. Select a user ID in the sidebar.")
+        return False
+    return True
+
+
+def compute_filtered_user_summary(start_date, end_date):
+    activity = filter_daily_activity("All Users", start_date, end_date)
+    sleep = filter_sleep_daily("All Users", start_date, end_date)
+    classes = load_user_classes()[["Id", "Class"]]
+
+    activity_summary = (
+        activity.groupby("Id", as_index=False)
+        .agg(
+            avg_daily_steps=("TotalSteps", "mean"),
+            avg_daily_calories=("Calories", "mean"),
         )
-        fig, ax = plt.subplots(figsize=(5, 3))
-        colors = ["#9ecae1", "#6baed6", "#3182bd"]
-        ax.bar(class_counts.index, class_counts.values, color=colors)
-        ax.set_ylabel("Number of Users")
-        ax.set_title("Users by Activity Class")
-        ax.grid(axis="y", linestyle="--", alpha=0.4)
-        plt.tight_layout()
-        st.pyplot(fig)
-        plt.close(fig)
-        st.caption(
-            "Light user ≤ 10 days, Moderate user 11–15 days, Heavy user > 15 days of recorded activity."
-        )
+    )
+    sleep_summary = (
+        sleep.groupby("Id", as_index=False)["sleep_minutes"]
+        .mean()
+        .rename(columns={"sleep_minutes": "avg_daily_sleep"})
+    )
+    return (
+        activity_summary.merge(sleep_summary, on="Id", how="left")
+        .merge(classes, on="Id", how="left")
+        .sort_values("avg_daily_steps", ascending=False)
+        .reset_index(drop=True)
+    )
 
-    st.divider()
 
-    # 3) Day-of-week activity breakdown (stacked bar)
-    st.subheader("Average Activity Breakdown by Day of Week")
-    dow = (
-        df.groupby("weekday")[
+def build_dual_axis_trend(daily_activity):
+    trend = (
+        daily_activity.groupby("ActivityDate", as_index=False)
+        .agg(avg_steps=("TotalSteps", "mean"), avg_calories=("Calories", "mean"))
+        .sort_values("ActivityDate")
+    )
+    fig, ax1 = plt.subplots(figsize=(10, 4.5))
+    ax2 = ax1.twinx()
+
+    ax1.plot(trend["ActivityDate"], trend["avg_steps"], color="#1f77b4", linewidth=2, label="Avg Steps")
+    ax2.plot(trend["ActivityDate"], trend["avg_calories"], color="#ff7f0e", linewidth=2, label="Avg Calories")
+
+    ax1.set_title("Average Daily Steps and Calories Over Time")
+    ax1.set_xlabel("Date")
+    ax1.set_ylabel("Steps", color="#1f77b4")
+    ax2.set_ylabel("Calories", color="#ff7f0e")
+    ax1.grid(True, linestyle="--", alpha=0.4)
+
+    lines = ax1.get_lines() + ax2.get_lines()
+    ax1.legend(lines, [line.get_label() for line in lines], loc="upper left")
+    fig.autofmt_xdate()
+    plt.tight_layout()
+    return fig
+
+
+def build_activity_distribution(activity_df, title):
+    breakdown = (
+        activity_df.groupby("weekday")[
             ["SedentaryMinutes", "LightlyActiveMinutes", "FairlyActiveMinutes", "VeryActiveMinutes"]
         ]
         .mean()
         .reindex(DAY_ORDER)
+        .fillna(0)
     )
-    fig2, ax2 = plt.subplots(figsize=(10, 4))
-    bottoms = np.zeros(len(dow))
-    palette = ["#d9d9d9", "#a8ddb5", "#43a2ca", "#0868ac"]
-    labels = ["Sedentary", "Lightly Active", "Fairly Active", "Very Active"]
-    for col, color, lbl in zip(
-        ["SedentaryMinutes", "LightlyActiveMinutes", "FairlyActiveMinutes", "VeryActiveMinutes"],
-        palette,
-        labels,
-    ):
-        ax2.bar(dow.index, dow[col].values, bottom=bottoms, color=color, label=lbl)
-        bottoms += dow[col].fillna(0).values
-    ax2.set_ylabel("Average Minutes")
-    ax2.set_title("Activity Composition per Day of Week")
-    ax2.legend(loc="upper right", fontsize=8)
-    ax2.grid(axis="y", linestyle="--", alpha=0.4)
+
+    fig, ax = plt.subplots(figsize=(9, 4.5))
+    bottom = np.zeros(len(breakdown))
+    for col in breakdown.columns:
+        ax.bar(
+            breakdown.index,
+            breakdown[col].values,
+            bottom=bottom,
+            label=col.replace("Minutes", ""),
+            color=ACTIVITY_COLORS[col],
+        )
+        bottom += breakdown[col].values
+
+    ax.set_title(title)
+    ax.set_ylabel("Average Minutes")
+    ax.tick_params(axis="x", rotation=30)
+    ax.legend(ncol=2, fontsize=9)
     plt.tight_layout()
-    st.pyplot(fig2)
-    plt.close(fig2)
-
-    st.divider()
-
-    # 4) Numerical summary table
-    st.subheader("Summary Statistics Table")
-    summary = (
-        df[["TotalSteps", "Calories", "active_minutes", "SedentaryMinutes", "VeryActiveMinutes"]]
-        .describe()
-        .T.rename(
-            index={
-                "TotalSteps": "Total Steps",
-                "Calories": "Calories",
-                "active_minutes": "Active Minutes",
-                "SedentaryMinutes": "Sedentary Minutes",
-                "VeryActiveMinutes": "Very Active Minutes",
-            }
-        )
-    )
-    st.dataframe(summary.style.format("{:.1f}"), use_container_width=True)
+    return fig
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  PAGE 2 – Individual Profile
-# ═══════════════════════════════════════════════════════════════════════════════
-def page_individual(user_id, start_date, end_date, time_block):
-    st.title(f"Individual Profile – User {user_id}")
-
-    df_act = load_daily_activity()
-    df_sleep = load_sleep()
-    df_hr = load_heart_rate()
-    df_intensity = load_hourly_intensity()
-    user_classes = load_user_classes()
-
-    # Filter by user & date
-    u_act = df_act[
-        (df_act["Id"] == user_id)
-        & (df_act["date"] >= start_date)
-        & (df_act["date"] <= end_date)
-    ].copy()
-
-    u_sleep = df_sleep[
-        (df_sleep["Id"] == user_id)
-        & (df_sleep["date"] >= start_date)
-        & (df_sleep["date"] <= end_date)
-    ].copy()
-
-    u_hr = df_hr[
-        (df_hr["Id"] == user_id)
-        & (df_hr["date"] >= start_date)
-        & (df_hr["date"] <= end_date)
-    ].copy()
-
-    u_intensity = df_intensity[
-        (df_intensity["Id"] == user_id)
-        & (df_intensity["date"] >= start_date)
-        & (df_intensity["date"] <= end_date)
-    ].copy()
-
-    # Apply time-of-day block filter
-    if time_block != "All Day":
-        u_hr_block = u_hr[u_hr["Time"].dt.hour.apply(assign_block) == time_block]
-        u_intensity_block = u_intensity[u_intensity["block"] == time_block]
-    else:
-        u_hr_block = u_hr
-        u_intensity_block = u_intensity
-
-    # User class
-    cls_row = user_classes[user_classes["Id"] == user_id]
-    user_class = cls_row["Class"].values[0] if len(cls_row) else "Unknown"
-
-    st.markdown(f"**Activity Class:** {user_class}")
-
-    # ── Key metrics ──────────────────────────────────────────────────────────
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total Steps", fmt_num(u_act["TotalSteps"].sum()))
-    c2.metric("Avg Daily Steps", fmt_num(u_act["TotalSteps"].mean()))
-    c3.metric("Avg Calories / Day", fmt_num(u_act["Calories"].mean()))
-    avg_sleep = u_sleep["sleep_minutes"].mean()
-    c4.metric("Avg Sleep (min)", fmt_num(avg_sleep))
-
-    st.divider()
-
-    tab1, tab2, tab3, tab4 = st.tabs(
-        ["Daily Activity", "Sleep Patterns", "Heart Rate & Intensity", "4-Hour Blocks"]
+def build_active_hours_heatmap(hourly_steps_df):
+    heatmap = (
+        hourly_steps_df.groupby(["weekday", "hour"], as_index=False)["StepTotal"]
+        .mean()
+        .pivot(index="weekday", columns="hour", values="StepTotal")
+        .reindex(DAY_ORDER)
+        .fillna(0)
     )
 
-    # ── Tab 1: Daily activity ────────────────────────────────────────────────
-    with tab1:
-        if u_act.empty:
-            st.info("No activity data for the selected period.")
-        else:
-            col_l, col_r = st.columns(2)
-            with col_l:
-                st.subheader("Steps & Calories over Time")
-                chart_df = u_act.set_index("ActivityDate")[["TotalSteps", "Calories"]]
-                st.line_chart(chart_df, use_container_width=True)
+    fig, ax = plt.subplots(figsize=(11, 4.8))
+    image = ax.imshow(heatmap.values, aspect="auto", cmap="YlOrRd")
+    ax.set_title("Most Active Hours Across the Week")
+    ax.set_xlabel("Hour of Day")
+    ax.set_ylabel("Day of Week")
+    ax.set_xticks(range(24))
+    ax.set_xticklabels(range(24))
+    ax.set_yticks(range(len(DAY_ORDER)))
+    ax.set_yticklabels(DAY_ORDER)
+    fig.colorbar(image, ax=ax, label="Average Steps")
+    plt.tight_layout()
+    return fig
 
-            with col_r:
-                st.subheader("Avg Steps & Calories by Day of Week")
-                dow = (
-                    u_act.groupby("weekday")[["TotalSteps", "Calories"]]
-                    .mean()
-                    .reindex(DAY_ORDER)
-                    .dropna(how="all")
-                )
-                fig, ax = plt.subplots(figsize=(6, 3.5))
-                x = np.arange(len(dow))
-                w = 0.4
-                ax.bar(x - w / 2, dow["TotalSteps"].values, w, label="Steps", color="steelblue")
-                ax.bar(x + w / 2, dow["Calories"].values, w, label="Calories", color="tomato")
-                ax.set_xticks(x)
-                ax.set_xticklabels(dow.index, rotation=30, ha="right")
-                ax.legend(fontsize=8)
-                ax.grid(axis="y", linestyle="--", alpha=0.4)
-                plt.tight_layout()
-                st.pyplot(fig)
-                plt.close(fig)
 
-    # ── Tab 2: Sleep ─────────────────────────────────────────────────────────
-    with tab2:
-        if u_sleep.empty:
-            st.info("No sleep data for the selected period.")
-        else:
-            col_l, col_r = st.columns(2)
-            with col_l:
-                st.subheader("Sleep Duration over Time")
-                sl_time = u_sleep.sort_values("date")
-                fig, ax = plt.subplots(figsize=(6, 3.5))
-                ax.plot(
-                    pd.to_datetime(sl_time["date"]),
-                    sl_time["sleep_minutes"],
-                    marker="o",
-                    linewidth=1.2,
-                    color="mediumseagreen",
-                )
-                ax.axhline(7 * 60, linestyle="--", color="grey", alpha=0.5, label="7 h")
-                ax.set_ylabel("Sleep (min)")
-                ax.legend(fontsize=8)
-                ax.grid(linestyle="--", alpha=0.4)
-                plt.tight_layout()
-                st.pyplot(fig)
-                plt.close(fig)
+def build_hourly_bar(hourly_steps_df, title):
+    hourly = hourly_steps_df.groupby("hour", as_index=False)["StepTotal"].mean()
+    hourly = hourly.set_index("hour").reindex(range(24), fill_value=0).reset_index()
 
-            with col_r:
-                st.subheader("Sleep by Day of Week")
-                box_data, labels = [], []
-                for d in DAY_ORDER:
-                    vals = u_sleep.loc[u_sleep["weekday"] == d, "sleep_minutes"].dropna().values
-                    if len(vals) > 0:
-                        box_data.append(vals)
-                        labels.append(d)
-                if box_data:
-                    fig, ax = plt.subplots(figsize=(6, 3.5))
-                    ax.boxplot(box_data, tick_labels=labels, showfliers=False)
-                    ax.axhline(420, linestyle="--", color="grey", alpha=0.5, label="7 h")
-                    ax.set_ylabel("Sleep (min)")
-                    ax.tick_params(axis="x", rotation=30)
-                    ax.grid(axis="y", linestyle="--", alpha=0.4)
-                    ax.legend(fontsize=8)
-                    plt.tight_layout()
-                    st.pyplot(fig)
-                    plt.close(fig)
-                else:
-                    st.info("Not enough data for box plot.")
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.bar(hourly["hour"], hourly["StepTotal"], color="#1f77b4")
+    ax.set_title(title)
+    ax.set_xlabel("Hour of Day")
+    ax.set_ylabel("Average Steps")
+    ax.set_xticks(range(24))
+    ax.grid(axis="y", linestyle="--", alpha=0.4)
+    plt.tight_layout()
+    return fig
 
-    # ── Tab 3: Heart rate & intensity ────────────────────────────────────────
-    with tab3:
-        st.caption(f"Showing time block: **{time_block}**")
-        if u_hr_block.empty and u_intensity_block.empty:
-            st.info("No heart rate or intensity data for the selected period / time block.")
-        else:
-            if not u_hr_block.empty:
-                st.subheader("Heart Rate over Time")
-                fig, ax = plt.subplots(figsize=(12, 3))
-                ax.plot(
-                    u_hr_block["Time"],
-                    u_hr_block["Value"],
-                    linewidth=0.6,
-                    color="crimson",
-                )
-                ax.set_ylabel("Heart Rate (bpm)")
-                ax.grid(linestyle="--", alpha=0.4)
-                plt.tight_layout()
-                st.pyplot(fig)
-                plt.close(fig)
 
-            if not u_intensity_block.empty:
-                st.subheader("Exercise Intensity (hourly)")
-                fig, ax = plt.subplots(figsize=(12, 3))
-                ax.bar(
-                    u_intensity_block["ActivityHour"],
-                    u_intensity_block["TotalIntensity"],
-                    width=1 / 24,
-                    color="steelblue",
-                )
-                ax.set_ylabel("Total Intensity")
-                ax.grid(axis="y", linestyle="--", alpha=0.4)
-                plt.tight_layout()
-                st.pyplot(fig)
-                plt.close(fig)
+def build_grouped_day_comparison(user_series, overall_series, title, y_label):
+    compare = pd.DataFrame({"Selected User": user_series, "Population Average": overall_series}).reindex(DAY_ORDER)
+    x = np.arange(len(compare.index))
+    width = 0.38
 
-    # ── Tab 4: 4-hour blocks ─────────────────────────────────────────────────
-    with tab4:
-        df_steps = load_hourly_steps()
-        df_cals = load_hourly_calories()
+    fig, ax = plt.subplots(figsize=(8.5, 4.5))
+    ax.bar(x - width / 2, compare["Selected User"].fillna(0), width=width, label="Selected User", color="#1f77b4")
+    ax.bar(x + width / 2, compare["Population Average"].fillna(0), width=width, label="Population Average", color="#ff7f0e")
+    ax.set_xticks(x)
+    ax.set_xticklabels(compare.index, rotation=30, ha="right")
+    ax.set_title(title)
+    ax.set_ylabel(y_label)
+    ax.legend()
+    ax.grid(axis="y", linestyle="--", alpha=0.4)
+    plt.tight_layout()
+    return fig
 
-        u_steps = df_steps[
-            (df_steps["Id"] == user_id)
-            & (df_steps["date"] >= start_date)
-            & (df_steps["date"] <= end_date)
-        ]
-        u_cals = df_cals[
-            (df_cals["Id"] == user_id)
-            & (df_cals["date"] >= start_date)
-            & (df_cals["date"] <= end_date)
-        ]
 
-        avg_steps = (
-            u_steps.groupby(["date", "block"])["StepTotal"]
-            .sum()
-            .groupby("block")
-            .mean()
-            .reindex(BLOCKS)
-        )
-        avg_cals = (
-            u_cals.groupby(["date", "block"])["Calories"]
-            .sum()
-            .groupby("block")
-            .mean()
-            .reindex(BLOCKS)
-        )
-        avg_sleep_block = None
-        if not u_sleep.empty:
-            df_min_sleep_raw = pd.read_sql_query(
-                "SELECT CAST(Id AS INTEGER) AS Id, date, logId FROM minute_sleep WHERE CAST(Id AS INTEGER) = ?",
-                get_conn(),
-                params=(user_id,),
+def build_regression_stats(x, y):
+    clean = pd.DataFrame({"x": x, "y": y}).dropna()
+    if len(clean) < 2:
+        return None
+
+    x_vals = clean["x"].to_numpy(dtype=float)
+    y_vals = clean["y"].to_numpy(dtype=float)
+    slope, intercept = np.polyfit(x_vals, y_vals, 1)
+    predictions = slope * x_vals + intercept
+    ss_res = np.sum((y_vals - predictions) ** 2)
+    ss_tot = np.sum((y_vals - y_vals.mean()) ** 2)
+    r2 = 1 - ss_res / ss_tot if ss_tot else 0.0
+    return {
+        "x": x_vals,
+        "y": y_vals,
+        "slope": slope,
+        "intercept": intercept,
+        "r2": r2,
+        "predictions": predictions,
+    }
+
+
+def build_regression_plot(dataset, x_col, x_label, selected_user=None):
+    stats = build_regression_stats(dataset[x_col], dataset["sleep_minutes"])
+    if stats is None:
+        return None, None
+
+    fig, ax = plt.subplots(figsize=(8.5, 5))
+    ax.scatter(stats["x"], stats["y"], alpha=0.35, color="#7f8c8d", label="All users")
+
+    x_line = np.linspace(stats["x"].min(), stats["x"].max(), 200)
+    y_line = stats["slope"] * x_line + stats["intercept"]
+
+    n = len(stats["x"])
+    mean_x = stats["x"].mean()
+    ssx = np.sum((stats["x"] - mean_x) ** 2)
+    residual_se = np.sqrt(np.sum((stats["y"] - stats["predictions"]) ** 2) / max(n - 2, 1))
+    if ssx > 0 and n > 2:
+        se_line = residual_se * np.sqrt(1 / n + ((x_line - mean_x) ** 2) / ssx)
+        margin = 1.96 * se_line
+        ax.fill_between(x_line, y_line - margin, y_line + margin, color="#5aa9e6", alpha=0.2, label="95% band")
+
+    ax.plot(x_line, y_line, color="#1f77b4", linewidth=2, label="Regression line")
+
+    if selected_user is not None:
+        user_df = dataset[dataset["Id"] == int(selected_user)]
+        if not user_df.empty:
+            ax.scatter(
+                user_df[x_col],
+                user_df["sleep_minutes"],
+                color="#d1495b",
+                edgecolor="white",
+                linewidth=0.5,
+                s=55,
+                label=f"User {selected_user}",
             )
-            df_min_sleep_raw["datetime"] = pd.to_datetime(df_min_sleep_raw["date"], format="mixed")
-            df_min_sleep_raw["date_only"] = df_min_sleep_raw["datetime"].dt.date
-            df_min_sleep_raw["block"] = df_min_sleep_raw["datetime"].dt.hour.apply(assign_block)
-            date_mask = (df_min_sleep_raw["date_only"] >= start_date) & (
-                df_min_sleep_raw["date_only"] <= end_date
+
+    ax.set_title(f"{x_label} vs Sleep Duration")
+    ax.set_xlabel(x_label)
+    ax.set_ylabel("Sleep Duration (minutes)")
+    ax.grid(True, linestyle="--", alpha=0.4)
+    ax.legend()
+    plt.tight_layout()
+    return fig, stats
+
+
+def regression_interpretation(slope, r2, x_label):
+    direction = "higher" if slope > 0 else "lower"
+    strength = "weak"
+    if r2 >= 0.5:
+        strength = "strong"
+    elif r2 >= 0.2:
+        strength = "moderate"
+
+    return (
+        f"The relationship is {strength}: {direction} {x_label.lower()} tends to align with "
+        f"{'more' if slope > 0 else 'less'} sleep, although the spread in the data is still substantial."
+    )
+
+
+def build_sleep_pattern_chart(sleep_df, selected_user):
+    sleep_df = sleep_df.copy()
+    sleep_df["weekday"] = sleep_df["SleepDate"].dt.day_name()
+
+    fig, ax = plt.subplots(figsize=(10, 4.8))
+    if selected_user == "All Users":
+        sleep_df = sleep_df.merge(load_user_classes()[["Id", "Class"]], on="Id", how="left")
+        grouped = (
+            sleep_df.groupby(["weekday", "Class"])["sleep_minutes"]
+            .agg(["mean", "std"])
+            .reset_index()
+        )
+        x = np.arange(len(DAY_ORDER))
+        width = 0.25
+        for idx, class_name in enumerate(a4.CLASS_ORDER):
+            class_slice = grouped[grouped["Class"] == class_name].set_index("weekday").reindex(DAY_ORDER)
+            ax.bar(
+                x + (idx - 1) * width,
+                class_slice["mean"].fillna(0),
+                yerr=class_slice["std"].fillna(0),
+                width=width,
+                label=class_name,
+                color=CLASS_COLORS[class_name],
+                capsize=3,
             )
-            df_min_sleep_raw = df_min_sleep_raw[date_mask]
-            if not df_min_sleep_raw.empty:
-                avg_sleep_block = (
-                    df_min_sleep_raw.groupby(["logId", "block"])
-                    .size()
-                    .reset_index(name="sleep_min")
-                    .groupby("block")["sleep_min"]
-                    .mean()
-                    .reindex(BLOCKS)
-                )
-
-        fig, axes = plt.subplots(1, 3, figsize=(14, 4))
-        axes[0].bar(BLOCKS, avg_steps.values, color="steelblue")
-        axes[0].set_title("Avg Steps per 4-Hour Block")
-        axes[0].set_ylabel("Steps")
-        axes[0].grid(axis="y", linestyle="--", alpha=0.4)
-
-        axes[1].bar(BLOCKS, avg_cals.values, color="tomato")
-        axes[1].set_title("Avg Calories per 4-Hour Block")
-        axes[1].set_ylabel("Calories")
-        axes[1].grid(axis="y", linestyle="--", alpha=0.4)
-
-        if avg_sleep_block is not None:
-            axes[2].bar(BLOCKS, avg_sleep_block.values, color="mediumseagreen")
-            axes[2].set_title("Avg Sleep Min per 4-Hour Block")
-            axes[2].set_ylabel("Minutes")
-            axes[2].grid(axis="y", linestyle="--", alpha=0.4)
-        else:
-            axes[2].text(0.5, 0.5, "No sleep data", ha="center", va="center", transform=axes[2].transAxes)
-
-        plt.tight_layout()
-        st.pyplot(fig)
-        plt.close(fig)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  PAGE 3 – Sleep Analysis
-# ═══════════════════════════════════════════════════════════════════════════════
-def page_sleep(start_date, end_date):
-    st.title("Sleep Duration Analysis")
-    st.markdown(
-        "Explore which variables affect how long individuals sleep. "
-        "Data merged from `daily_activity` and `minute_sleep`."
-    )
-
-    df_act = load_daily_activity()
-    df_sleep = load_sleep()
-    user_classes = load_user_classes()
-
-    # Filter dates
-    act_mask = (df_act["date"] >= start_date) & (df_act["date"] <= end_date)
-    slp_mask = (df_sleep["date"] >= start_date) & (df_sleep["date"] <= end_date)
-    df_a = df_act[act_mask].copy()
-    df_s = df_sleep[slp_mask].copy()
-
-    merged = pd.merge(df_a, df_s[["Id", "date", "sleep_minutes", "is_weekend"]], on=["Id", "date"], how="inner")
-    merged = merged.merge(user_classes, on="Id", how="left")
-
-    if merged.empty:
-        st.warning("No data available for the selected date range.")
-        return
-
-    # ── Section 1: Sleep vs Active Minutes (regression) ──────────────────────
-    st.subheader("1. Sleep Duration vs Active Minutes")
-    col_l, col_r = st.columns([2, 1])
-
-    with col_l:
-        X = merged[["active_minutes"]].values
-        y = merged["sleep_minutes"].values
-        model = LinearRegression().fit(X, y)
-        r2 = model.score(X, y)
-        slope = model.coef_[0]
-        intercept = model.intercept_
-
-        x_line = np.linspace(X.min(), X.max(), 200).reshape(-1, 1)
-        y_line = model.predict(x_line)
-
-        fig, ax = plt.subplots(figsize=(7, 4))
-        ax.scatter(X, y, alpha=0.4, s=15, color="steelblue", label="Observations")
-        ax.plot(x_line, y_line, color="crimson", linewidth=2, label=f"Regression (R²={r2:.3f})")
-        ax.set_xlabel("Active Minutes")
-        ax.set_ylabel("Sleep Minutes")
-        ax.set_title("Sleep vs Active Minutes")
-        ax.legend(fontsize=8)
-        ax.grid(linestyle="--", alpha=0.4)
-        plt.tight_layout()
-        st.pyplot(fig)
-        plt.close(fig)
-
-    with col_r:
-        st.markdown("**Regression results**")
-        st.metric("Slope", f"{slope:.3f} min/active-min")
-        st.metric("Intercept", f"{intercept:.1f} min")
-        st.metric("R²", f"{r2:.4f}")
-        corr = merged["active_minutes"].corr(merged["sleep_minutes"])
-        st.metric("Pearson r", f"{corr:.3f}")
-        st.markdown(
-            "A negative slope indicates that more active minutes are associated with "
-            "slightly shorter (or equal) sleep durations."
-        )
-
-    st.divider()
-
-    # ── Section 2: Sleep vs Steps ────────────────────────────────────────────
-    st.subheader("2. Sleep Duration vs Total Steps")
-    col_l2, col_r2 = st.columns([2, 1])
-    with col_l2:
-        X2 = merged[["TotalSteps"]].values
-        y2 = merged["sleep_minutes"].values
-        model2 = LinearRegression().fit(X2, y2)
-        r2_2 = model2.score(X2, y2)
-
-        x_line2 = np.linspace(X2.min(), X2.max(), 200).reshape(-1, 1)
-        y_line2 = model2.predict(x_line2)
-
-        fig2, ax2 = plt.subplots(figsize=(7, 4))
-        ax2.scatter(X2, y2, alpha=0.4, s=15, color="darkorange", label="Observations")
-        ax2.plot(x_line2, y_line2, color="navy", linewidth=2, label=f"R²={r2_2:.3f}")
-        ax2.set_xlabel("Total Steps")
-        ax2.set_ylabel("Sleep Minutes")
-        ax2.set_title("Sleep vs Total Steps")
-        ax2.legend(fontsize=8)
-        ax2.grid(linestyle="--", alpha=0.4)
-        plt.tight_layout()
-        st.pyplot(fig2)
-        plt.close(fig2)
-
-    with col_r2:
-        st.markdown("**Regression results**")
-        st.metric("Slope", f"{model2.coef_[0]:.5f} min/step")
-        st.metric("R²", f"{r2_2:.4f}")
-        corr2 = merged["TotalSteps"].corr(merged["sleep_minutes"])
-        st.metric("Pearson r", f"{corr2:.3f}")
-
-    st.divider()
-
-    # ── Section 3: Sleep by User Class ───────────────────────────────────────
-    st.subheader("3. Sleep Duration by User Class")
-    col_l3, col_r3 = st.columns(2)
-
-    with col_l3:
-        box_data = [
-            merged.loc[merged["Class"] == c, "sleep_minutes"].dropna().values
-            for c in CLASS_ORDER
-        ]
-        counts = [len(d) for d in box_data]
-        labels_cls = [f"{c}\n(n={n})" for c, n in zip(CLASS_ORDER, counts)]
-        fig3, ax3 = plt.subplots(figsize=(6, 4))
-        ax3.boxplot([d for d in box_data if len(d) > 0],
-                    tick_labels=[l for l, d in zip(labels_cls, box_data) if len(d) > 0],
-                    showfliers=False)
-        ax3.axhline(420, linestyle="--", color="grey", alpha=0.5, label="7 h")
-        ax3.set_ylabel("Sleep (min)")
-        ax3.set_title("Sleep by Activity Class")
-        ax3.grid(axis="y", linestyle="--", alpha=0.4)
-        ax3.legend(fontsize=8)
-        plt.tight_layout()
-        st.pyplot(fig3)
-        plt.close(fig3)
-
-    with col_r3:
-        class_sleep = (
-            merged.groupby("Class")["sleep_minutes"]
-            .agg(["mean", "median", "std", "count"])
-            .reindex(CLASS_ORDER)
-            .rename(columns={"mean": "Mean", "median": "Median", "std": "Std Dev", "count": "N"})
-        )
-        st.markdown("**Mean sleep per class**")
-        st.dataframe(class_sleep.style.format({"Mean": "{:.1f}", "Median": "{:.1f}", "Std Dev": "{:.1f}", "N": "{:.0f}"}))
-
-    st.divider()
-
-    # ── Section 4: Weekend vs Weekday ────────────────────────────────────────
-    st.subheader("4. Weekend vs Weekday Sleep")
-    col_l4, col_r4 = st.columns(2)
-
-    with col_l4:
-        wknd = merged.groupby("is_weekend")["sleep_minutes"].agg(["mean", "median", "std", "count"])
-        wknd.index = ["Weekday", "Weekend"]
-        fig4, ax4 = plt.subplots(figsize=(5, 3.5))
-        bars = ax4.bar(wknd.index, wknd["mean"], color=["steelblue", "tomato"], width=0.4)
-        ax4.errorbar(wknd.index, wknd["mean"], yerr=wknd["std"], fmt="none", color="black", capsize=5)
-        ax4.axhline(420, linestyle="--", color="grey", alpha=0.5)
-        ax4.set_ylabel("Mean Sleep (min)")
-        ax4.set_title("Sleep: Weekend vs Weekday")
-        ax4.grid(axis="y", linestyle="--", alpha=0.4)
-        plt.tight_layout()
-        st.pyplot(fig4)
-        plt.close(fig4)
-
-    with col_r4:
-        st.markdown("**Descriptive statistics**")
-        st.dataframe(wknd.rename(columns={"mean": "Mean", "median": "Median", "std": "Std Dev", "count": "N"})
-                     .style.format({"Mean": "{:.1f}", "Median": "{:.1f}", "Std Dev": "{:.1f}", "N": "{:.0f}"}))
-        diff = wknd.loc["Weekend", "mean"] - wknd.loc["Weekday", "mean"]
-        st.markdown(f"Weekend sleep is **{diff:+.1f} min** compared to weekday sleep.")
-
-    st.divider()
-
-    # ── Section 5: Sleep by day of week ─────────────────────────────────────
-    st.subheader("5. Sleep Duration by Day of Week")
-    dow_sleep = merged.groupby("weekday")["sleep_minutes"].agg(["mean", "std"]).reindex(DAY_ORDER).dropna()
-    fig5, ax5 = plt.subplots(figsize=(10, 3.5))
-    ax5.bar(dow_sleep.index, dow_sleep["mean"], color="mediumseagreen", width=0.5, label="Mean Sleep")
-    ax5.errorbar(dow_sleep.index, dow_sleep["mean"], yerr=dow_sleep["std"], fmt="none", color="black", capsize=5)
-    ax5.axhline(420, linestyle="--", color="grey", alpha=0.5, label="7 h target")
-    ax5.set_ylabel("Mean Sleep (min)")
-    ax5.set_title("Average Sleep Duration by Day of Week")
-    ax5.legend(fontsize=8)
-    ax5.grid(axis="y", linestyle="--", alpha=0.4)
-    plt.tight_layout()
-    st.pyplot(fig5)
-    plt.close(fig5)
-
-    st.divider()
-
-    # ── Section 6: Sedentary minutes vs sleep ───────────────────────────────
-    st.subheader("6. Sedentary Time vs Sleep Duration")
-    col_l6, col_r6 = st.columns([2, 1])
-    with col_l6:
-        X6 = merged[["SedentaryMinutes"]].values
-        y6 = merged["sleep_minutes"].values
-        model6 = LinearRegression().fit(X6, y6)
-        r2_6 = model6.score(X6, y6)
-
-        x_line6 = np.linspace(X6.min(), X6.max(), 200).reshape(-1, 1)
-        y_line6 = model6.predict(x_line6)
-
-        fig6, ax6 = plt.subplots(figsize=(7, 4))
-        ax6.scatter(X6, y6, alpha=0.4, s=15, color="plum", label="Observations")
-        ax6.plot(x_line6, y_line6, color="darkviolet", linewidth=2, label=f"R²={r2_6:.3f}")
-        ax6.set_xlabel("Sedentary Minutes")
-        ax6.set_ylabel("Sleep Minutes")
-        ax6.set_title("Sleep vs Sedentary Minutes")
-        ax6.legend(fontsize=8)
-        ax6.grid(linestyle="--", alpha=0.4)
-        plt.tight_layout()
-        st.pyplot(fig6)
-        plt.close(fig6)
-
-    with col_r6:
-        corr6 = merged["SedentaryMinutes"].corr(merged["sleep_minutes"])
-        st.metric("R²", f"{r2_6:.4f}")
-        st.metric("Pearson r", f"{corr6:.3f}")
-        st.markdown("More sedentary time may indicate less physical exertion, potentially affecting sleep quality and duration.")
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  PAGE 4 – Activity Blocks (population-level)
-# ═══════════════════════════════════════════════════════════════════════════════
-def page_activity_blocks(start_date, end_date, time_block):
-    st.title("Activity in 4-Hour Time Blocks")
-    st.markdown("Population-level averages across all users for the selected date range.")
-
-    df_steps = load_hourly_steps()
-    df_cals = load_hourly_calories()
-    df_sleep_raw = pd.read_sql_query(
-        "SELECT CAST(Id AS INTEGER) AS Id, date, logId FROM minute_sleep", get_conn()
-    )
-    df_sleep_raw["datetime"] = pd.to_datetime(df_sleep_raw["date"], format="mixed")
-    df_sleep_raw["date_only"] = df_sleep_raw["datetime"].dt.date
-    df_sleep_raw["block"] = df_sleep_raw["datetime"].dt.hour.apply(assign_block)
-
-    # Date filter
-    steps_m = (df_steps["date"] >= start_date) & (df_steps["date"] <= end_date)
-    cals_m = (df_cals["date"] >= start_date) & (df_cals["date"] <= end_date)
-    slp_m = (df_sleep_raw["date_only"] >= start_date) & (df_sleep_raw["date_only"] <= end_date)
-
-    df_s = df_steps[steps_m]
-    df_c = df_cals[cals_m]
-    df_sl = df_sleep_raw[slp_m]
-
-    blocks_to_show = [time_block] if time_block != "All Day" else BLOCKS
-
-    avg_steps = (
-        df_s.groupby(["Id", "date", "block"])["StepTotal"]
-        .sum()
-        .groupby("block")
-        .mean()
-        .reindex(blocks_to_show)
-    )
-    avg_cals = (
-        df_c.groupby(["Id", "date", "block"])["Calories"]
-        .sum()
-        .groupby("block")
-        .mean()
-        .reindex(blocks_to_show)
-    )
-    avg_sleep = (
-        df_sl.groupby(["Id", "logId", "block"])
-        .size()
-        .reset_index(name="sleep_min")
-        .groupby("block")["sleep_min"]
-        .mean()
-        .reindex(blocks_to_show)
-    )
-
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-    axes[0].bar(blocks_to_show, avg_steps.values, color="steelblue")
-    axes[0].set_title("Avg Steps per Block")
-    axes[0].set_xlabel("Block")
-    axes[0].set_ylabel("Steps")
-    axes[0].grid(axis="y", linestyle="--", alpha=0.4)
-
-    axes[1].bar(blocks_to_show, avg_cals.values, color="tomato")
-    axes[1].set_title("Avg Calories per Block")
-    axes[1].set_xlabel("Block")
-    axes[1].set_ylabel("Calories")
-    axes[1].grid(axis="y", linestyle="--", alpha=0.4)
-
-    axes[2].bar(blocks_to_show, avg_sleep.values, color="mediumseagreen")
-    axes[2].set_title("Avg Sleep Min per Block")
-    axes[2].set_xlabel("Block")
-    axes[2].set_ylabel("Minutes")
-    axes[2].grid(axis="y", linestyle="--", alpha=0.4)
-
-    plt.tight_layout()
-    st.pyplot(fig)
-    plt.close(fig)
-
-    st.divider()
-
-    # Class breakdown
-    st.subheader("Average Steps per Block by User Class")
-    user_classes = load_user_classes()
-    df_s_cls = df_steps[steps_m].merge(user_classes, on="Id", how="inner")
-    class_block = (
-        df_s_cls.groupby(["Class", "Id", "date", "block"], as_index=False)["StepTotal"]
-        .sum()
-        .groupby(["Class", "block"], as_index=False)["StepTotal"]
-        .mean()
-        .pivot(index="Class", columns="block", values="StepTotal")
-        .reindex(index=CLASS_ORDER, columns=BLOCKS)
-    )
-
-    fig2, ax2 = plt.subplots(figsize=(10, 5))
-    x = np.arange(len(BLOCKS))
-    w = 0.25
-    colors = ["#9ecae1", "#6baed6", "#08519c"]
-    for i, cls in enumerate(CLASS_ORDER):
-        vals = class_block.loc[cls].reindex(BLOCKS).values if cls in class_block.index else np.zeros(len(BLOCKS))
-        ax2.bar(x + (i - 1) * w, vals, w, label=cls, color=colors[i])
-    ax2.set_xticks(x)
-    ax2.set_xticklabels(BLOCKS)
-    ax2.set_ylabel("Avg Steps")
-    ax2.set_title("Intra-Day Steps by User Class")
-    ax2.legend()
-    ax2.grid(axis="y", linestyle="--", alpha=0.4)
-    plt.tight_layout()
-    st.pyplot(fig2)
-    plt.close(fig2)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  PAGE 5 – Weight & BMI
-# ═══════════════════════════════════════════════════════════════════════════════
-def page_weight():
-    st.title("Weight & BMI")
-    st.markdown("Logged weight measurements for users who used the weight tracking feature.")
-
-    df = load_weight()
-    user_classes = load_user_classes()
-
-    if df.empty:
-        st.warning("No weight data available.")
-        return
-
-    df = df.merge(user_classes, on="Id", how="left")
-
-    col_l, col_r = st.columns(2)
-    with col_l:
-        st.subheader("BMI Distribution by User Class")
-        box_data = [
-            df.loc[df["Class"] == c, "BMI"].dropna().values for c in CLASS_ORDER
-        ]
-        labels_cls = [
-            f"{c} (n={len(d)})" for c, d in zip(CLASS_ORDER, box_data)
-        ]
-        fig, ax = plt.subplots(figsize=(6, 4))
-        non_empty = [(d, l) for d, l in zip(box_data, labels_cls) if len(d) > 0]
-        if non_empty:
-            ax.boxplot([d for d, _ in non_empty], tick_labels=[l for _, l in non_empty], showfliers=False)
-        ax.set_ylabel("BMI")
-        ax.set_title("BMI by Activity Class")
-        ax.grid(axis="y", linestyle="--", alpha=0.4)
-        plt.tight_layout()
-        st.pyplot(fig)
-        plt.close(fig)
-
-    with col_r:
-        st.subheader("BMI vs Average Steps")
-        # Merge with activity
-        df_act = load_daily_activity()
-        avg_steps = df_act.groupby("Id")["TotalSteps"].mean().reset_index()
-        avg_steps.columns = ["Id", "AvgSteps"]
-        df_bmi = df.groupby("Id")["BMI"].mean().reset_index()
-        bmi_steps = df_bmi.merge(avg_steps, on="Id")
-
-        fig2, ax2 = plt.subplots(figsize=(6, 4))
-        ax2.scatter(bmi_steps["AvgSteps"], bmi_steps["BMI"], alpha=0.7, color="darkorange")
-        ax2.set_xlabel("Avg Daily Steps")
-        ax2.set_ylabel("BMI")
-        ax2.set_title("BMI vs Avg Daily Steps (per user)")
-        ax2.grid(linestyle="--", alpha=0.4)
-        plt.tight_layout()
-        st.pyplot(fig2)
-        plt.close(fig2)
-
-    st.subheader("Weight Trend over Time (per user)")
-    weight_users = sorted(df["Id"].unique())
-    sel = st.selectbox("Select User", weight_users, key="weight_user_sel")
-    u_df = df[df["Id"] == sel].sort_values("Date")
-    if u_df.empty:
-        st.info("No weight data for this user.")
+        ax.set_xticks(x)
+        ax.set_xticklabels(DAY_ORDER, rotation=30, ha="right")
+        ax.legend()
     else:
-        fig3, ax3 = plt.subplots(figsize=(10, 3.5))
-        ax3.plot(u_df["Date"], u_df["WeightKg"], marker="o", color="steelblue", label="Weight (kg)")
-        ax_bmi = ax3.twinx()
-        ax_bmi.plot(u_df["Date"], u_df["BMI"], marker="s", color="tomato", linestyle="--", label="BMI")
-        ax3.set_ylabel("Weight (kg)")
-        ax_bmi.set_ylabel("BMI", color="tomato")
-        ax3.set_title(f"User {sel}: Weight & BMI over Time")
-        lines1, labels1 = ax3.get_legend_handles_labels()
-        lines2, labels2 = ax_bmi.get_legend_handles_labels()
-        ax3.legend(lines1 + lines2, labels1 + labels2, fontsize=8, loc="upper left")
-        ax3.grid(linestyle="--", alpha=0.4)
-        plt.tight_layout()
-        st.pyplot(fig3)
-        plt.close(fig3)
+        grouped = sleep_df.groupby("weekday")["sleep_minutes"].agg(["mean", "std"]).reindex(DAY_ORDER)
+        ax.bar(
+            grouped.index,
+            grouped["mean"].fillna(0),
+            yerr=grouped["std"].fillna(0),
+            color="#1f77b4",
+            capsize=4,
+        )
+        ax.tick_params(axis="x", rotation=30)
+
+    ax.set_title("Day-of-Week Sleep Patterns")
+    ax.set_ylabel("Average Sleep Duration (minutes)")
+    ax.grid(axis="y", linestyle="--", alpha=0.4)
+    plt.tight_layout()
+    return fig
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  MAIN
-# ═══════════════════════════════════════════════════════════════════════════════
-def main():
-    st.set_page_config(page_title="Fitbit Analytics Dashboard", layout="wide")
-
-    # ── Sidebar ──────────────────────────────────────────────────────────────
-    st.sidebar.title("📊 Fitbit Analytics Dashboard")
-    st.sidebar.divider()
-    st.sidebar.title("Navigation")
-    page = st.sidebar.radio(
-        "Go to",
-        ["Overview", "Individual Profile", "Sleep Analysis", "Activity Blocks", "Weight & BMI"],
+def build_class_distribution_chart(summary_df):
+    counts = summary_df["Class"].value_counts().reindex(a4.CLASS_ORDER).fillna(0)
+    fig, ax = plt.subplots(figsize=(5.5, 5.5))
+    colors = [CLASS_COLORS[class_name] for class_name in a4.CLASS_ORDER]
+    wedges, _ = ax.pie(
+        counts.values,
+        labels=None,
+        startangle=90,
+        colors=colors,
+        wedgeprops={"width": 0.42},
     )
-    st.sidebar.divider()
-    st.sidebar.header("Filters")
+    ax.legend(
+        wedges,
+        [f"{label} ({int(value)})" for label, value in zip(a4.CLASS_ORDER, counts.values)],
+        title="User Class",
+        loc="center left",
+        bbox_to_anchor=(1.0, 0.5),
+        frameon=False,
+    )
+    ax.set_title("User Class Distribution")
+    plt.tight_layout()
+    return fig
 
-    # Date range
-    import datetime
-    min_date = datetime.date(2016, 3, 12)
-    max_date = datetime.date(2016, 4, 9)
-    start_date = st.sidebar.date_input("Start Date", min_date, min_value=min_date, max_value=max_date)
-    end_date = st.sidebar.date_input("End Date", max_date, min_value=min_date, max_value=max_date)
-    if start_date > end_date:
-        st.sidebar.error("Start date must be before end date.")
+
+def render_page_one():
+    st.header("Page 1: General Overview")
+
+    daily_activity = load_daily_activity()
+    sleep_daily = load_sleep_daily()
+    user_summary = load_user_summary()
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Total Users", f"{daily_activity['Id'].nunique()}")
+    col2.metric("Average Daily Steps", f"{daily_activity['TotalSteps'].mean():,.0f}")
+    col3.metric("Average Daily Sleep", f"{sleep_daily['sleep_minutes'].mean():,.0f} min")
+    col4.metric("Average Daily Calories", f"{daily_activity['Calories'].mean():,.0f}")
+
+    top_left, top_right = st.columns(2)
+    with top_left:
+        st.pyplot(build_dual_axis_trend(daily_activity), clear_figure=True)
+    with top_right:
+        st.pyplot(build_class_distribution_chart(user_summary), clear_figure=True)
+
+    bottom_left, bottom_right = st.columns(2)
+    with bottom_left:
+        st.pyplot(
+            build_activity_distribution(daily_activity, "Average Activity Level Distribution by Weekday"),
+            clear_figure=True,
+        )
+    with bottom_right:
+        st.pyplot(build_active_hours_heatmap(load_hourly_steps()), clear_figure=True)
+
+    display_table = user_summary.rename(
+        columns={
+            "avg_daily_steps": "Avg Daily Steps",
+            "avg_daily_calories": "Avg Daily Calories",
+            "avg_daily_sleep": "Avg Daily Sleep",
+        }
+    )[["Id", "Avg Daily Steps", "Avg Daily Calories", "Avg Daily Sleep", "Class"]]
+    style = display_table.style.background_gradient(
+        cmap="Blues",
+        subset=["Avg Daily Steps", "Avg Daily Calories", "Avg Daily Sleep"],
+    ).format(
+        {
+            "Average Daily Steps": "{:,.0f}",
+            "Average Daily Calories": "{:,.0f}",
+            "Average Daily Sleep": "{:,.0f}",
+        }
+    )
+    st.subheader("Per-User Summary")
+    st.dataframe(style, use_container_width=True, hide_index=True)
+
+
+def render_page_two(user_choice, start_date, end_date):
+    st.header("Page 2: Individual Summary")
+    if not ensure_specific_user(user_choice, "Page 2"):
         return
 
-    # Time block
-    time_block = st.sidebar.selectbox(
-        "Time of Day",
-        ["All Day"] + BLOCKS,
+    activity = filter_daily_activity(user_choice, start_date, end_date)
+    sleep = filter_sleep_daily(user_choice, start_date, end_date)
+    overall_activity = filter_daily_activity("All Users", start_date, end_date)
+    overall_sleep = filter_sleep_daily("All Users", start_date, end_date)
+    hourly_steps = filter_hourly_steps(user_choice, start_date, end_date)
+
+    classes = load_user_classes().set_index("Id")
+    user_class = classes.loc[int(user_choice), "Class"]
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("User Class", user_class.replace(" user", ""))
+    col2.metric(
+        "Average Daily Steps",
+        f"{activity['TotalSteps'].mean():,.0f}",
+        delta=f"{activity['TotalSteps'].mean() - overall_activity['TotalSteps'].mean():+.0f} vs average",
+    )
+    col3.metric(
+        "Average Daily Sleep",
+        f"{sleep['sleep_minutes'].mean():,.0f} min" if not sleep.empty else "N/A",
+        delta=(
+            f"{sleep['sleep_minutes'].mean() - overall_sleep['sleep_minutes'].mean():+.0f} min vs average"
+            if not sleep.empty and not overall_sleep.empty
+            else None
+        ),
+    )
+    col4.metric(
+        "Average Daily Calories",
+        f"{activity['Calories'].mean():,.0f}",
+        delta=f"{activity['Calories'].mean() - overall_activity['Calories'].mean():+.0f} vs average",
     )
 
-    # User ID (only relevant for Individual Profile)
-    df_act = load_daily_activity()
-    all_ids = sorted(df_act["Id"].unique().tolist())
-    user_id = st.sidebar.selectbox("User ID (Individual Profile)", all_ids)
+    st.subheader("Percentile Rank")
+    summary = compute_filtered_user_summary(start_date, end_date)
+    user_row = summary[summary["Id"] == int(user_choice)]
+    if not user_row.empty:
+        percentile_cols = st.columns(3)
+        for idx, metric in enumerate(
+            [
+                ("avg_daily_steps", "Steps"),
+                ("avg_daily_sleep", "Sleep"),
+                ("avg_daily_calories", "Calories"),
+            ]
+        ):
+            rank = summary[metric[0]].rank(pct=True)
+            percentile = rank.loc[summary["Id"] == int(user_choice)].iloc[0] * 100
+            percentile_cols[idx].metric(f"{metric[1]} Percentile", f"{percentile:.0f}th")
 
-    st.sidebar.divider()
-    st.sidebar.caption("Fitbit Wearable Study · March–April 2016")
+    merged = activity[["ActivityDate", "TotalSteps", "Calories"]].merge(
+        sleep[["SleepDate", "sleep_minutes"]],
+        left_on="ActivityDate",
+        right_on="SleepDate",
+        how="left",
+    )
 
-    # ── Route to page ─────────────────────────────────────────────────────────
-    if page == "Overview":
-        page_overview(start_date, end_date)
-    elif page == "Individual Profile":
-        page_individual(user_id, start_date, end_date, time_block)
-    elif page == "Sleep Analysis":
-        page_sleep(start_date, end_date)
-    elif page == "Activity Blocks":
-        page_activity_blocks(start_date, end_date, time_block)
-    elif page == "Weight & BMI":
-        page_weight()
+    st.subheader("Daily Trends (Steps, Calories and Sleep)")
+    chart_cols = st.columns(3)
+    with chart_cols[0]:
+        st.line_chart(merged.set_index("ActivityDate")["TotalSteps"])
+    with chart_cols[1]:
+        st.line_chart(merged.set_index("ActivityDate")["Calories"])
+    with chart_cols[2]:
+        sleep_series = merged.set_index("ActivityDate")["sleep_minutes"]
+        st.line_chart(sleep_series.dropna() if not sleep_series.dropna().empty else sleep_series)
+
+    st.subheader("Day-of-Week Breakdown")
+    user_steps = activity.groupby("weekday")["TotalSteps"].mean()
+    overall_steps = overall_activity.groupby("weekday")["TotalSteps"].mean()
+    user_sleep = sleep.groupby("weekday")["sleep_minutes"].mean()
+    overall_sleep = overall_sleep.groupby("weekday")["sleep_minutes"].mean()
+    breakdown_cols = st.columns(2)
+    with breakdown_cols[0]:
+        st.pyplot(
+            build_grouped_day_comparison(
+                user_steps, overall_steps, "Average Steps by Day: User vs Population", "Average Steps"
+            ),
+            clear_figure=True,
+        )
+    with breakdown_cols[1]:
+        st.pyplot(
+            build_grouped_day_comparison(
+                user_sleep, overall_sleep, "Average Sleep by Day: User vs Population", "Sleep Minutes"
+            ),
+            clear_figure=True,
+        )
+
+    st.subheader("Most Active Hours")
+    st.pyplot(build_hourly_bar(hourly_steps, f"Average Hourly Steps for User {user_choice}"), clear_figure=True)
+
+    st.subheader("Activity Level Distribution")
+    st.pyplot(
+        build_activity_distribution(activity, f"Activity Mix Through the Week for User {user_choice}"),
+        clear_figure=True,
+    )
 
 
-if __name__ == "__main__":
-    main()
+def render_page_three(user_choice, start_date, end_date):
+    st.header("Page 3: Sleep Analysis")
+
+    dataset = build_activity_sleep_dataset(start_date, end_date)
+    sleep_view = filter_sleep_daily(user_choice, start_date, end_date)
+    if user_choice != "All Users":
+        dataset = dataset[dataset["Id"] == int(user_choice)].copy()
+
+    if dataset.empty:
+        st.info("No joined activity and sleep records are available for this selection.")
+        return
+
+    st.subheader("Regression Panel")
+    variable_map = {
+        "Total Steps": "TotalSteps",
+        "Active Minutes": "active_minutes",
+        "Sedentary Minutes": "SedentaryMinutes",
+        "Calories": "Calories",
+        "Intensity": "daily_intensity",
+    }
+    selected_label = st.selectbox("Choose the explanatory variable", list(variable_map.keys()))
+    regression_base = build_activity_sleep_dataset(start_date, end_date)
+    fig, stats = build_regression_plot(
+        regression_base,
+        variable_map[selected_label],
+        selected_label,
+        None if user_choice == "All Users" else user_choice,
+    )
+
+    if fig is None:
+        st.info("Not enough data to fit the regression line.")
+    else:
+        st.pyplot(fig, clear_figure=True)
+        metric_cols = st.columns(3)
+        metric_cols[0].metric("Slope", f"{stats['slope']:.3f}")
+        metric_cols[1].metric("Intercept", f"{stats['intercept']:.2f}")
+        metric_cols[2].metric("R2", f"{stats['r2']:.3f}")
+        st.caption(regression_interpretation(stats["slope"], stats["r2"], selected_label))
+
+    st.subheader("Day-of-Week Sleep Patterns")
+    st.pyplot(build_sleep_pattern_chart(sleep_view, user_choice), clear_figure=True)
+
+
+st.set_page_config(page_title="Fitbit Analytics Dashboard", layout="wide")
+st.title("Fitbit Analytics Dashboard")
+
+min_date, max_date = get_date_bounds()
+user_options = ["All Users"] + load_user_summary()["Id"].astype(int).astype(str).tolist()
+
+st.sidebar.header("Filters")
+page = st.sidebar.radio(
+    "Page",
+    [
+        "Page 1: General Overview",
+        "Page 2: Individual Summary",
+        "Page 3: Sleep Analysis",
+    ],
+)
+user_choice = st.sidebar.selectbox("User ID", user_options, index=0)
+date_range = st.sidebar.date_input(
+    "Date Range",
+    value=(min_date, max_date),
+    min_value=min_date,
+    max_value=max_date,
+)
+if len(date_range) != 2:
+    start_date, end_date = min_date, max_date
+else:
+    start_date, end_date = date_range
+if start_date > end_date:
+    start_date, end_date = end_date, start_date
+
+st.caption(
+    f"Sidebar filters apply to Pages 2-3. Current selection: {format_user_option(user_choice)}, "
+    f"{start_date} to {end_date}."
+)
+
+if page == "Page 1: General Overview":
+    render_page_one()
+elif page == "Page 2: Individual Summary":
+    render_page_two(user_choice, start_date, end_date)
+else:
+    render_page_three(user_choice, start_date, end_date)
