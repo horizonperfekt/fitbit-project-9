@@ -113,3 +113,17 @@ streamlit run part5/a5.py
 ## Project Goal
 
 The goal of this project is to present Fitbit health and activity data in a way that is both analytically useful and easy to explore interactively. It is designed for comparing users, identifying activity and sleep patterns, and summarizing study-wide behavior through visual analytics.
+# fitbit-project-9
+
+## Work Distribution
+1. Francis:
+- In week 3 I was responsible for doing analysis on sleep related data and collecting the daily active minutes of entries in the database using linear regression. 
+- In week 4 I took upon me the task of making functions that produce graphical and numerical summaries about our statistics. 
+- In week 5 I was responsible for making the layout for our dashboard on streamlit. 
+- Use of AI: I used AI mostly to run me through the use of the python libraries, so that I could finish my tasks in a timely manner.
+
+2. Linh:
+- In week 3 I was responsible for running linear regressions of sleep (dependent) against sedentary minutes (independent) for all individuals and also per-user. I also used plots to verify normality assumptions of the model
+- In week 4 I derived some general statistic conclusions about the data as preparations for the dashboard
+- In week 5 I came up with the features in the dashboards and implemented them based on my last week's work
+- Use of AI: I used AI to help with plotting complicated graphs require the aggregation and averages of data
