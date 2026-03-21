@@ -127,3 +127,11 @@ The goal of this project is to present Fitbit health and activity data in a way 
 - In week 4 I derived some general statistic conclusions about the data as preparations for the dashboard
 - In week 5 I came up with the features in the dashboards and implemented them based on my last week's work
 - Use of AI: I used AI to help with plotting complicated graphs require the aggregation and averages of data
+
+3. Dean:
+- Week 1: Everything under basic inspection of data (unique users, user-specific function, etc.)
+- Week 3: Analyse relationship between Chicago weather and fitbit data, using correlation matrix.
+- Week 4: Run different analyses, to investigate relations between various tables.
+- Week 5: Backend of the streamlit dashboard, hook up graphs to data points.
+
+4. Tim:
