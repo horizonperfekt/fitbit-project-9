@@ -1,4 +1,4 @@
-# Fitbit Analytics Dashboard
+# Fitbit Analytics Dashboard - Project group 9
 
 This repository contains a Fitbit data analysis project built with Python, SQLite, and Streamlit. It combines daily activity, sleep, hourly steps, and intensity data into an interactive dashboard that helps explore both population-level trends and individual participant behavior.
 
@@ -117,8 +117,6 @@ streamlit run part5/a5.py
 
 The goal of this project is to present Fitbit health and activity data in a way that is both analytically useful and easy to explore interactively. It is designed for comparing users, identifying activity and sleep patterns, and summarizing study-wide behavior through visual analytics.
 
-# fitbit-project-9
-
 ## Work Distribution
 
 1. Francis:
@@ -144,7 +142,7 @@ The goal of this project is to present Fitbit health and activity data in a way 
 
 4. Tim:
 
-- week 3: I was responsible for dividing the day into 4-hour blocks and computing average steps, calories burnt and minutes of sleep for each block, as well as writing a function to visualize heart rate and exercise intensity per individual.
-- week 4: I worked on the weight log table, handling missing values and computing BMI from the available data.
-- week 5: I was responsible for making the layout for our dashboard on streamlit together with Francis.
+- Week 3: I was responsible for dividing the day into 4-hour blocks and computing average steps, calories burnt and minutes of sleep for each block, as well as writing a function to visualize heart rate and exercise intensity per individual.
+- Week 4: I worked on the weight log table, handling missing values and computing BMI from the available data.
+- Week 5: I was responsible for making the layout for our dashboard on streamlit together with Francis.
 - Use of AI: I used AI to help with structuring the dashboard layout in streamlit and to look up how to handle missing values and work with the different data tables.
