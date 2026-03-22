@@ -147,4 +147,4 @@ The goal of this project is to present Fitbit health and activity data in a way 
 - week 3: I was responsible for dividing the day into 4-hour blocks and computing average steps, calories burnt and minutes of sleep for each block, as well as writing a function to visualize heart rate and exercise intensity per individual.
 - week 4: I worked on the weight log table, handling missing values and computing BMI from the available data.
 - week 5: I was responsible for making the layout for our dashboard on streamlit together with Francis.
-- Use of AI: I used AI to help with structuring the dashboard layout in streamlit and to look up how to handle missing values and work with the different data tables."
+- Use of AI: I used AI to help with structuring the dashboard layout in streamlit and to look up how to handle missing values and work with the different data tables.

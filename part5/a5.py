@@ -7,11 +7,9 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-# import functions from previous weeks
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "part4"))
 import a4
 
-# Database paths
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "fitbit_database.db")
 DAY_ORDER = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 ACTIVITY_COLORS = {
